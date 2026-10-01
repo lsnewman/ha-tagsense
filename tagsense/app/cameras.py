@@ -10,7 +10,7 @@ from datetime import datetime
 
 from .sanity import decode_jpeg
 from .scheduler import SHARED
-from .sources import FetchError, Source
+from .sources import FetchError, Frame, Source
 from .tracker import Burst, TrackedObject
 
 log = logging.getLogger("tagsense")
@@ -28,6 +28,9 @@ class CameraWorker:
         self.objects: list[TrackedObject] = []
         self.last_error: str | None = None
         self.fetch_failures_total = 0
+        self.fetch_lock = threading.Lock()     # bursts and UI grabs share the source
+        self.last_frame: Frame | None = None   # newest good frame, for the web UI
+        self.last_frame_at = 0.0
         self.thread = threading.Thread(target=self.run, name=f"camera-{name}", daemon=True)
 
     def due(self, now: float) -> dict[TrackedObject, str]:
@@ -58,13 +61,25 @@ class CameraWorker:
             except Exception:       # never let one bad check kill the worker
                 log.exception("[%s] check failed", self.name)
 
+    def fetch(self) -> Frame:
+        with self.fetch_lock:
+            frame = self.source.fetch()
+        self.last_frame, self.last_frame_at = frame, time.monotonic()
+        return frame
+
+    def grab(self, max_age_s: float = 0.0) -> Frame:
+        """A full frame for the web UI: cached if fresh enough, else fetched now."""
+        if self.last_frame and time.monotonic() - self.last_frame_at <= max_age_s:
+            return self.last_frame
+        return self.fetch()
+
     def fetch_burst(self) -> Burst:
         b = Burst(requested=self.burst_size)
         for i in range(self.burst_size):
             if i and self.stop_event.wait(self.burst_interval_s):
                 break
             try:
-                frame = self.source.fetch()
+                frame = self.fetch()
             except FetchError as e:
                 b.failures += 1
                 self.last_error = f"{datetime.now().strftime('%H:%M:%S')} {e}"

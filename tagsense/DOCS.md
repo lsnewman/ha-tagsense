@@ -35,31 +35,17 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 
 ### Objects
 
-Add one entry under `objects` for each tagged thing:
+Objects are managed in the **TagSense panel** in the sidebar: click **Add
+object**, give it a name, the tag ID printed on it, and the camera that sees
+it (a go2rtc stream or a Home Assistant camera). Then draw its search area on
+the live frame. Changes apply straight away.
 
-```yaml
-objects:
-  - name: Bin
-    tag_id: 5
-    source: go2rtc
-    go2rtc_stream: car_port_high
-  - name: Car
-    id: car
-    tag_id: 12
-    source: ha_camera
-    camera_entity: camera.driveway
-```
-
-| Field | Notes |
-|---|---|
-| `name` | Required. Names the device ("TagSense Bin") and its main sensor. |
-| `id` | Optional stable ID (a-z, 0-9, `_`), used in entity IDs and MQTT topics. Made from the name if left out, so renaming creates new entities unless you set it. |
-| `tag_id` | Required. tag16h5 ID, 0–29. Must be unique per camera. |
-| `source` | `go2rtc` or `ha_camera` |
-| `go2rtc_stream` | Required for `go2rtc`. A stream name from `http://<frigate-hostname>:1984/api/streams`. |
-| `camera_entity` | Required for `ha_camera`, and used as the fallback when `fallback_source` is `ha_camera`. |
-
-Objects on the same stream or camera share each burst of frames.
+- The **ID** is made from the name unless you type one, and cannot be changed
+  later. Renaming keeps the ID, so the entities stay the same.
+- Objects on the same camera need different tag IDs, and share each burst of
+  frames.
+- The `objects` option on this tab is only used once, to import objects on
+  the first start of 0.4.0. After that it is ignored.
 
 ### Global options
 
@@ -106,6 +92,8 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
 - **Crop x1/y1/x2/y2** (numbers, 0–1): the normalised region searched for the
   tag. It must cover everywhere the object might be. The default is
   `0.65, 0.45, 1.0, 1.0`.
+- **Search area**: easiest to set in the TagSense panel by dragging a box on a
+  live frame. The crop numbers below are the same setting.
 - **Last crop** (image): the latest crop annotated with the tag outline, the
   ID and size, and a red dot on corner 0. Any other tag ID decoded during the
   burst (a phantom candidate), or a decode of the target ID rejected by the

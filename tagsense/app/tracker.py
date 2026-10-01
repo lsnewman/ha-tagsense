@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -30,6 +31,9 @@ log = logging.getLogger("tagsense")
 
 def iso(ts: float | None) -> str | None:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None
+
+
+HISTORY_LEN = 50
 
 
 def _mean(xs):
@@ -80,8 +84,14 @@ class TrackedObject:
         self.reference = Reference.load(self.reference_path)
         self.sched = Scheduler(time.monotonic(), self.settings.poll_interval,
                                tuning.confirm_delay_s, self.settings.enabled)
+        self.camera = None                  # CameraWorker, set by the app
         self.known_ids: set[int] = set()   # other objects' tags on this camera: not phantoms
         self.last_phantom: dict | None = None
+        # For the web UI
+        self.history: deque[dict] = deque(maxlen=HISTORY_LEN)
+        self.last_jpeg: bytes | None = None
+        self.last_phantom_jpeg: bytes | None = None
+        self.last_corners: list | None = None      # normalised corners of the last hit
         self.last_diag: dict = {}
         self.last_presence_attrs: dict = {}
         self.last_status_attrs: dict = {}
@@ -242,9 +252,47 @@ class TrackedObject:
             }
             self._publish_state_locked()
             self.pub.publish_diagnostics(self.last_diag, attrs)
+            if best:
+                w, h = best.det.frame_wh
+                self.last_corners = [[round(float(x) / w, 4), round(float(y) / h, 4)]
+                                     for x, y in best.det.corners]
+            self.history.appendleft({
+                "at": iso(now), "trigger": trigger, "outcome": outcome, "frames": attempted,
+                "valid": len(valid), "hits": len(hits), "reported": value, "reason": reason,
+                "warning": self.last_diag["warning"],
+                "phantoms": [p.describe() for p in phantoms]})
         if image_src is not None:
-            self.pub.publish_image(annotate(image_src.check.bgr, image_src.det, phantoms))
+            jpeg = annotate(image_src.check.bgr, image_src.det, phantoms)
+            self.last_jpeg = jpeg
+            if phantoms:
+                self.last_phantom_jpeg = jpeg
+            self.pub.publish_image(jpeg)
         log.info("[%s] check %s: %d/%d valid, %d hits, %d fetch failures -> %s; reported %s (%s), "
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
                  outcome, value, reason, self.decision.miss_streak)
         return outcome
+
+    # --- web UI -----------------------------------------------------------
+
+    def status(self) -> dict:
+        with self.cond:
+            value, reason = self.decision.reported(self.cfg, self.settings.enabled)
+            return {
+                **self.oc.to_dict(),
+                "state": value, "reason": reason,
+                "last_check": iso(self.decision.last_check_ts),
+                "last_seen": iso(self.decision.last_seen_ts),
+                "miss_streak": self.decision.miss_streak,
+                "settings": self.settings_values(),
+                "reference": self.reference.as_attrs()
+                | {"centre": [self.reference.cx, self.reference.cy] if self.reference.hits else None},
+                "last_corners": self.last_corners,
+                "diag": self.last_diag,
+                "last_phantom": self.last_phantom,
+                "has_image": self.last_jpeg is not None,
+                "has_phantom_image": self.last_phantom_jpeg is not None,
+            }
+
+    def history_list(self) -> list[dict]:
+        with self.cond:
+            return list(self.history)

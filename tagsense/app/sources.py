@@ -101,3 +101,26 @@ def build_source(opts: dict) -> Source:
     if fb and fb != "none" and fb != opts.get("source"):
         return FallbackSource(primary, make(fb))
     return primary
+
+
+# --- discovery helpers for the web UI ----------------------------------------
+
+def list_go2rtc_streams(base_url: str, timeout: float = 5) -> list[str]:
+    if not base_url:
+        return []
+    r = requests.get(base_url.rstrip("/") + "/api/streams", timeout=timeout)
+    r.raise_for_status()
+    return sorted(r.json().keys())
+
+
+def list_ha_cameras(token: str | None = None, timeout: float = 5) -> list[dict]:
+    token = token or os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        return []
+    r = requests.get(f"{SUPERVISOR_URL}/core/api/states",
+                     headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
+    r.raise_for_status()
+    return sorted(({"entity_id": s["entity_id"],
+                    "name": s.get("attributes", {}).get("friendly_name", s["entity_id"])}
+                   for s in r.json() if s["entity_id"].startswith("camera.")),
+                  key=lambda c: c["entity_id"])

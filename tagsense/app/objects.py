@@ -1,18 +1,22 @@
-"""Object configuration: parsing, validation, legacy migration, data folders."""
+"""Object configuration: validation and the /data/objects.json store.
+
+The web UI owns the object list. On first start it is imported once from the
+`objects` app option; after that the option is ignored.
+"""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 log = logging.getLogger(__name__)
 
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 RESERVED_IDS = {"availability"}
 SOURCES = ("go2rtc", "ha_camera")
-STATE_FILES = ("settings.json", "state.json", "reference.json")
 
 
 class ConfigError(ValueError):
@@ -38,11 +42,18 @@ class ObjectConfig:
         """Objects with the same key share frame fetches."""
         return (self.source, self.go2rtc_stream if self.source == "go2rtc" else self.camera_entity)
 
+    def to_dict(self) -> dict:
+        return asdict(self)
 
-def _one(raw: dict, where: str) -> ObjectConfig:
+
+def parse_one(raw: dict, where: str = "object") -> ObjectConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: expected an object")
     name = str(raw.get("name") or "").strip()
     if not name:
         raise ConfigError(f"{where}: name is required")
+    if len(name) > 60:
+        raise ConfigError(f"{where}: name is too long (60 characters max)")
     oid = str(raw.get("id") or "").strip().lower() or slugify(name)
     if not ID_RE.match(oid) or oid in RESERVED_IDS:
         raise ConfigError(f"{where} ({name}): id {oid!r} must be 1-40 of a-z, 0-9, _ "
@@ -65,33 +76,30 @@ def _one(raw: dict, where: str) -> ObjectConfig:
     return ObjectConfig(oid, name, tag_id, source, stream, entity)
 
 
-def parse_objects(opts: dict) -> tuple[list[ObjectConfig], bool]:
-    """Objects from options. Returns (objects, from_legacy_flat_options)."""
-    raw_list = opts.get("objects") or []
-    legacy = False
-    if not raw_list:
-        if not (opts.get("object_name") or opts.get("go2rtc_stream") or opts.get("camera_entity")):
-            raise ConfigError("no objects configured: add at least one entry under 'objects'")
-        # 0.2.x single-object options
-        raw_list = [{"name": opts.get("object_name") or "Object",
-                     "tag_id": opts.get("tag_id", 5),
-                     "source": opts.get("source") or "go2rtc",
-                     "go2rtc_stream": opts.get("go2rtc_stream", ""),
-                     "camera_entity": opts.get("camera_entity", "")}]
-        legacy = True
-    objs = [_one(r, f"objects[{i}]") for i, r in enumerate(raw_list)]
-
+def validate_list(objs: list[ObjectConfig]) -> list[ObjectConfig]:
     seen_ids, seen_tags = set(), {}
     for o in objs:
         if o.id in seen_ids:
-            raise ConfigError(f"duplicate object id {o.id!r}: set a distinct 'id' or name")
+            raise ConfigError(f"duplicate object id {o.id!r}: choose a distinct id or name")
         seen_ids.add(o.id)
         key = (o.camera_key, o.tag_id)
         if key in seen_tags:
-            raise ConfigError(f"{o.name} and {seen_tags[key]} use tag_id {o.tag_id} on the same "
-                              "camera; they would always agree, so give them different tags")
+            raise ConfigError(f"{o.name} and {seen_tags[key]} use tag {o.tag_id} on the same "
+                              "camera; give them different tags")
         seen_tags[key] = o.name
-    return objs, legacy
+    return objs
+
+
+def parse_list(raw_list: list) -> list[ObjectConfig]:
+    return validate_list([parse_one(r, f"objects[{i}]") for i, r in enumerate(raw_list or [])])
+
+
+def unique_id(base: str, taken: set[str]) -> str:
+    oid, n = base, 2
+    while oid in taken:
+        suffix = f"_{n}"
+        oid, n = base[:40 - len(suffix)] + suffix, n + 1
+    return oid
 
 
 def object_dir(data_dir: str, obj_id: str) -> str:
@@ -100,16 +108,38 @@ def object_dir(data_dir: str, obj_id: str) -> str:
     return d
 
 
-def migrate_legacy_files(data_dir: str, first: ObjectConfig) -> bool:
-    """Move 0.2.x state files from /data into the first object's folder, once."""
-    present = [f for f in STATE_FILES if os.path.exists(os.path.join(data_dir, f))]
-    if not present:
-        return False
-    target = object_dir(data_dir, first.id)
-    if any(os.path.exists(os.path.join(target, f)) for f in STATE_FILES):
-        log.warning("legacy state files found but %s already has state; leaving them", target)
-        return False
-    for f in present:
-        shutil.move(os.path.join(data_dir, f), os.path.join(target, f))
-    log.info("migrated %s into objects/%s/", ", ".join(present), first.id)
-    return True
+def remove_object_dir(data_dir: str, obj_id: str):
+    shutil.rmtree(os.path.join(data_dir, "objects", obj_id), ignore_errors=True)
+
+
+class ObjectStore:
+    """/data/objects.json: the list of objects, edited from the web UI."""
+
+    def __init__(self, data_dir: str):
+        self.path = os.path.join(data_dir, "objects.json")
+
+    def exists(self) -> bool:
+        return os.path.exists(self.path)
+
+    def load(self) -> list[ObjectConfig]:
+        with open(self.path) as f:
+            return parse_list(json.load(f))
+
+    def save(self, objs: list[ObjectConfig]):
+        validate_list(objs)
+        tmp = f"{self.path}.tmp"
+        with open(tmp, "w") as f:
+            json.dump([o.to_dict() for o in objs], f, indent=2)
+        os.replace(tmp, self.path)
+
+    def load_or_import(self, option_objects: list) -> list[ObjectConfig]:
+        """First start: import the `objects` option. Afterwards it is ignored."""
+        if self.exists():
+            if option_objects:
+                log.info("the 'objects' app option is ignored: objects are managed in the "
+                         "TagSense panel (imported %s)", self.path)
+            return self.load()
+        objs = parse_list(option_objects)
+        self.save(objs)
+        log.info("imported %d object(s) from the app options into %s", len(objs), self.path)
+        return objs

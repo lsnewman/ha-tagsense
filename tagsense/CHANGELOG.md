@@ -2,6 +2,22 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.4.0
+
+- **TagSense panel** in the HA sidebar (ingress):
+  - overview of all objects with state, last image and Check now
+  - add, edit and delete objects live, without restarting the app; go2rtc
+    streams and HA cameras are offered in a list
+  - search area editor: drag a box on a live frame, with the last detection
+    and the learned usual position drawn on it
+  - enabled and poll interval settings, recent check history (last 50),
+    last phantom read with its image, and diagnostics
+  - printable tag16h5 PNG for any ID, with the quiet zone
+- Objects are now stored in /data/objects.json. The `objects` option is
+  imported once on first start, then ignored.
+- Removed: support for the 0.2 single-object options and the pre-0.3 MQTT
+  clean-up. Upgrade through 0.3.x if coming from 0.2.
+
 ## 0.3.0
 
 - **Multiple objects.** New `objects` list: each entry has a name, optional

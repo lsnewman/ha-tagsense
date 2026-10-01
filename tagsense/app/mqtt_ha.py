@@ -171,20 +171,6 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
     return out
 
 
-def legacy_topics() -> list[str]:
-    """Retained topics written by 0.1/0.2 (single unprefixed device), to clear."""
-    keys = {"binary_sensor": ["bin"], "sensor": ["status"] + [k for k, _, _ in DIAGNOSTICS],
-            "button": ["check_now"], "switch": ["enabled"], "image": ["last_crop"],
-            "number": ["poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2"]}
-    out = [f"{DISCOVERY_PREFIX}/{c}/tagsense/{k}/config" for c, ks in keys.items() for k in ks]
-    out += [f"{BASE}/bin/{x}" for x in ("state", "attributes", "available")]
-    out += [f"{BASE}/status/state", f"{BASE}/status/attributes"]
-    out += [f"{BASE}/diag/{k}" for k, _, _ in DIAGNOSTICS]
-    out += [f"{BASE}/diag/{k}" for k in ("crop_stats", "phantoms", "reference")]
-    out += [f"{BASE}/{d}/{k}" for d in ("set", "state") for k in SETTING_KEYS]
-    return out
-
-
 class ObjectPublisher:
     """Publishes one object's discovery, state, settings and diagnostics."""
 
@@ -227,6 +213,17 @@ class ObjectPublisher:
     def publish_image(self, jpeg: bytes):
         self.pub(self.t.image, jpeg, retain=False)
 
+    def remove(self):
+        """Delete this object's entities from HA and clear its retained topics."""
+        t = self.t
+        topics = [topic for topic, _ in discovery_configs(self.client.version, self.id, self.name)]
+        topics += [t.presence, t.presence_attrs, t.presence_available, t.status, t.status_attrs]
+        topics += [t.setting(k) for k in SETTING_KEYS] + [t.set(k) for k in SETTING_KEYS]
+        topics += [t.diag(k) for k, _, _ in DIAGNOSTICS]
+        topics += [t.attrs(n) for n in ("reference", "phantoms", "crop_stats")]
+        for topic in topics:
+            self.pub(topic, b"")
+
 
 class MqttClient:
     """The shared connection. Routes commands to objects by id."""
@@ -265,10 +262,6 @@ class MqttClient:
 
     def pub(self, topic: str, payload, retain: bool = True):
         self.client.publish(topic, payload, qos=1 if retain else 0, retain=retain)
-
-    def clear_retained(self, topics: list[str]):
-        for t in topics:
-            self.pub(t, b"")
 
     # --- callbacks (paho thread: keep short) ------------------------------
 

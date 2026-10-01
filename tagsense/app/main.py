@@ -1,4 +1,4 @@
-"""TagSense app entry point: options, objects, camera workers and MQTT wiring."""
+"""TagSense app entry point: options, objects, camera workers, MQTT and web UI."""
 from __future__ import annotations
 
 import json
@@ -9,8 +9,9 @@ import threading
 
 from . import decision as dec
 from .cameras import CameraWorker
-from .mqtt_ha import MqttClient, ObjectPublisher, legacy_topics, supervisor_mqtt_config
-from .objects import ConfigError, ObjectConfig, migrate_legacy_files, parse_objects
+from .mqtt_ha import MqttClient, ObjectPublisher, supervisor_mqtt_config
+from .objects import (ConfigError, ObjectConfig, ObjectStore, remove_object_dir,
+                      validate_list)
 from .scheduler import STARTUP
 from .sources import build_source
 from .tracker import TrackedObject, Tuning
@@ -19,8 +20,7 @@ log = logging.getLogger("tagsense")
 
 DATA_DIR = os.environ.get("TAGSENSE_DATA", "/data")
 VERSION = os.environ.get("TAGSENSE_VERSION", "dev")
-LEGACY_CLEARED_MARKER = ".mqtt_v3"
-LEGACY_CLEAR_DELAY_S = 3.0   # let HA remove the old entities before adding new ones
+WEB_PORT = int(os.environ.get("TAGSENSE_WEB_PORT", "8099"))
 
 DEFAULT_OPTIONS = {
     "objects": [],
@@ -71,16 +71,15 @@ def make_source(oc: ObjectConfig, opts: dict):
 
 
 class App:
-    def __init__(self, opts: dict):
+    def __init__(self, opts: dict, mqtt=None, source_factory=make_source, data_dir: str = DATA_DIR):
         self.opts = opts
+        self.data_dir = data_dir
+        self.source_factory = source_factory
         self.stop_event = threading.Event()
-        objs, legacy = parse_objects(opts)
-        if legacy:
-            log.warning("using 0.2-style single-object options; move them under 'objects' "
-                        "(see the docs). They will stop working in a future release.")
-        migrate_legacy_files(DATA_DIR, objs[0])
-
-        tuning = Tuning(
+        self.reload_lock = threading.RLock()
+        self.store = ObjectStore(data_dir)
+        self.configs = self.store.load_or_import(opts.get("objects") or [])
+        self.tuning = Tuning(
             cfg=dec.Config(present_min_hits=int(opts["present_min_hits"]),
                            absent_checks=int(opts["absent_checks"]),
                            unknown_after_failures=int(opts["unknown_after_failures"])),
@@ -88,55 +87,102 @@ class App:
             confirm_delay_s=float(opts["confirm_delay_s"]),
             sanity_min_ratio=float(opts["sanity_min_ratio"]),
             sanity_min_h=float(opts["sanity_min_h"]))
-
-        self.mqtt = MqttClient(supervisor_mqtt_config(opts), VERSION,
-                               on_connected=self._on_connected,
-                               on_setting=self._on_setting,
-                               on_check_now=self._on_check_now,
-                               on_ha_restart=self._on_ha_restart)
+        self.mqtt = mqtt or MqttClient(supervisor_mqtt_config(opts), VERSION,
+                                       on_connected=self._on_connected,
+                                       on_setting=self._on_setting,
+                                       on_check_now=self._on_check_now,
+                                       on_ha_restart=self._on_ha_restart)
+        self.connected = False
         self.cameras: dict[tuple, CameraWorker] = {}
         self.objects: dict[str, TrackedObject] = {}
-        fallback = opts.get("fallback_source", "none")
-        for oc in objs:
+        self.gen_stop = threading.Event()
+        self._build(self.configs)
+
+    # --- building and live reload -----------------------------------------
+
+    def _build(self, configs: list[ObjectConfig]):
+        """Create camera workers and tracked objects (workers not started)."""
+        self.gen_stop = threading.Event()
+        cameras: dict[tuple, CameraWorker] = {}
+        objects: dict[str, TrackedObject] = {}
+        fallback = self.opts.get("fallback_source", "none")
+        for oc in configs:
             key = camera_key(oc, fallback)
-            if key not in self.cameras:
+            if key not in cameras:
                 name = oc.go2rtc_stream if oc.source == "go2rtc" else oc.camera_entity
-                self.cameras[key] = CameraWorker(
-                    name, make_source(oc, opts), threading.Condition(),
-                    int(opts["burst_size"]), float(opts["burst_interval_s"]), self.stop_event)
-            cam = self.cameras[key]
-            obj = TrackedObject(oc, tuning, DATA_DIR, ObjectPublisher(self.mqtt, oc.id, oc.name),
-                                cam.cond)
+                cameras[key] = CameraWorker(
+                    name, self.source_factory(oc, self.opts), threading.Condition(),
+                    int(self.opts["burst_size"]), float(self.opts["burst_interval_s"]),
+                    self.gen_stop)
+            cam = cameras[key]
+            obj = TrackedObject(oc, self.tuning, self.data_dir,
+                                ObjectPublisher(self.mqtt, oc.id, oc.name), cam.cond)
+            obj.camera = cam
             cam.objects.append(obj)
-            self.objects[oc.id] = obj
-        for cam in self.cameras.values():
+            objects[oc.id] = obj
+        for cam in cameras.values():
             for o in cam.objects:
                 o.known_ids = {p.oc.tag_id for p in cam.objects if p is not o}
             log.info("camera %s: %s", cam.name,
                      ", ".join(f"{o.oc.name} (tag {o.oc.tag_id})" for o in cam.objects))
+        if not configs:
+            log.info("no objects configured yet: add one in the TagSense panel")
+        self.cameras, self.objects = cameras, objects
+
+    def _start_workers(self):
+        for cam in self.cameras.values():
+            cam.thread.start()
+
+    def _stop_workers(self):
+        self.gen_stop.set()
+        for cam in self.cameras.values():
+            with cam.cond:
+                cam.cond.notify_all()
+        for cam in self.cameras.values():
+            if cam.thread.is_alive():
+                cam.thread.join(timeout=30)
+
+    def apply_configs(self, configs: list[ObjectConfig], removed: list[ObjectConfig] = ()):
+        """Validate, save and switch to a new object list without restarting."""
+        validate_list(configs)
+        for oc in configs:      # fail before stopping anything (e.g. go2rtc_url unset)
+            try:
+                self.source_factory(oc, self.opts)
+            except ValueError as e:
+                raise ConfigError(f"{oc.name}: {e}") from None
+        with self.reload_lock:
+            old_objects = self.objects
+            self.store.save(configs)
+            self._stop_workers()
+            for oc in removed:
+                if o := old_objects.get(oc.id):
+                    o.pub.remove()
+                remove_object_dir(self.data_dir, oc.id)
+            # Renamed objects keep their id; republish discovery with the new name.
+            self.configs = list(configs)
+            self._build(self.configs)
+            if self.connected:
+                for o in self.objects.values():
+                    o.publish_all(also_commands=True)
+                    o.request(STARTUP)
+            self._start_workers()
+        log.info("objects reloaded: %s", ", ".join(o.id for o in configs) or "(none)")
 
     # --- MQTT callbacks (paho thread) -------------------------------------
 
     def _on_connected(self, first: bool):
-        marker = os.path.join(DATA_DIR, LEGACY_CLEARED_MARKER)
-        if first and not os.path.exists(marker):
-            log.info("clearing pre-0.3 MQTT entities and topics")
-            self.mqtt.clear_retained(legacy_topics())
-            open(marker, "w").close()
-            threading.Timer(LEGACY_CLEAR_DELAY_S, self._publish_and_start, args=(True,)).start()
-        else:
-            self._publish_and_start(first)
-
-    def _publish_and_start(self, first: bool):
-        for o in self.objects.values():
-            o.publish_all(also_commands=True)
-        if first:
+        with self.reload_lock:
+            self.connected = True
             for o in self.objects.values():
-                o.request(STARTUP)
+                o.publish_all(also_commands=True)
+            if first:
+                for o in self.objects.values():
+                    o.request(STARTUP)
 
     def _on_ha_restart(self):
-        for o in self.objects.values():
-            o.publish_all()
+        with self.reload_lock:
+            for o in self.objects.values():
+                o.publish_all()
 
     def _on_setting(self, obj_id: str, key: str, value: str):
         if o := self.objects.get(obj_id):
@@ -150,20 +196,20 @@ class App:
 
     # --- lifecycle --------------------------------------------------------
 
-    def run(self):
+    def run(self, web: bool = True):
+        if web:
+            from .web import start_web
+            start_web(self, WEB_PORT)
         self.mqtt.start()
-        for cam in self.cameras.values():
-            cam.thread.start()
+        self._start_workers()
         self.stop_event.wait()
-        for cam in self.cameras.values():
-            with cam.cond:
-                cam.cond.notify_all()
-        for cam in self.cameras.values():
-            cam.thread.join(timeout=15)
+        with self.reload_lock:
+            self._stop_workers()
         self.mqtt.stop()
 
     def shutdown(self, *_):
         log.info("stopping")
+        self.gen_stop.set()
         self.stop_event.set()
 
 

@@ -5,7 +5,9 @@ in its usual place. Stick a printed AprilTag on it, such as a wheelie bin, a
 car, a chair or a garage door. TagSense grabs frames from a camera that can
 see the tag, looks for it, and publishes **present / absent / unknown** to
 Home Assistant through MQTT discovery. One app can watch several tagged
-objects, on one or more cameras, and each appears as its own device.
+objects, on one or more cameras, and each appears as its own device. A
+**TagSense panel** in the sidebar is where you add objects and draw each
+one's search area on a live camera frame.
 
 It is meant as a cheap, deterministic alternative to an image classifier
 (for example a Frigate custom model) for "is the bin out?" style questions.
@@ -64,11 +66,41 @@ than after several polls.
    ```
 2. Find **TagSense** in the store and click **Install**. The image is built on
    your machine, which takes a few minutes the first time.
-3. On the **Configuration** tab, add your objects under `objects` (see
-   [Objects](#objects)). If any use go2rtc, set `go2rtc_url`. Then start the
-   app.
-4. Each object appears as a **TagSense <name>** device under the MQTT
+3. On the **Configuration** tab, set `go2rtc_url` if you will use go2rtc
+   streams. Then start the app.
+4. Open **TagSense** in the sidebar, click **Add object**, and give it a name,
+   the tag ID and the camera. Then draw its search area (see
+   [The TagSense panel](#the-tagsense-panel)).
+5. Each object appears as a **TagSense <name>** device under the MQTT
    integration.
+
+## The TagSense panel
+
+The app adds a **TagSense** entry to the Home Assistant sidebar. Only
+logged-in Home Assistant users can open it.
+
+- **Overview:** every object with its state, the reason, when it was last
+  checked, the latest annotated crop, and a **Check now** button.
+- **Add / edit object:** name, ID, tag ID and camera. go2rtc streams and Home
+  Assistant cameras are listed for you to pick from. Changes apply straight
+  away, without restarting the app.
+- **Search area editor:** a live frame from the object's camera, with the
+  search area drawn as a box. Drag it to move it, drag a corner to resize it,
+  or drag on the image to draw a new box. The last detection (green) and the
+  learned usual position (cyan) are drawn on the frame, so you can see where
+  the tag actually is. Saving runs a check straight away.
+- **Settings:** Enabled and Poll interval. These are the same settings as the
+  MQTT entities, so changes show up in both places.
+- **Recent checks:** the last 50 checks since the app started (trigger,
+  result, hits, what was reported, warnings and phantom reads), plus the last
+  phantom read with its image.
+- **Diagnostics:** fetch and detect times, discard rate, sanity ratio, crop
+  brightness and contrast, fetch errors, and how much position data has been
+  learned.
+- **Print tag:** a printable PNG of the object's tag16h5 ID, with the white
+  margin it needs.
+- **Delete:** removes the object, its Home Assistant entities and its saved
+  state.
 
 ## The tag
 
@@ -86,50 +118,34 @@ than after several polls.
   ways to get more decode margin. As a reference, the development setup sees
   a flat tag at about 50 px across in a 1080p frame.
 
-Generator tools for tag16h5 are easy to find, and OpenCV can produce one with
-`cv2.aruco.generateImageMarker`.
+The panel's **Print tag** button produces a ready-to-print tag for any ID,
+with the white margin included.
+
+## Objects
+
+Objects are managed in the TagSense panel and stored by the app in
+`/data/objects.json`. Each object has:
+
+| Field | What it does |
+|---|---|
+| Name | What the tag is on. It names the device ("TagSense Bin") and its main sensor. It can be changed at any time. |
+| ID | A short, stable identifier (lowercase letters, digits, `_`), used in entity IDs, MQTT topics and the data folder. It is made from the name unless you type one, and **cannot be changed later**. Renaming the object keeps its ID, so its entities and history stay. |
+| Tag ID | The tag16h5 ID on this object (0–29). Two objects on the same camera need different IDs. The same ID on different cameras is fine. |
+| Camera | A **go2rtc stream** (fetched as `<go2rtc_url>/api/frame.jpeg?src=<stream>`; choose the highest-resolution stream that connects directly to the camera) or a **Home Assistant camera** entity, read through the camera proxy. A camera entity set on a go2rtc object is used as the fallback when `fallback_source` is `ha_camera`. |
+
+Objects on the same stream (or camera entity) share one camera worker: each
+burst is fetched once and judged by all of them, each with its own crop and
+tag. Different cameras are checked in parallel. The other objects' tags on a
+shared camera are recognised, so they are not logged as phantoms.
+
+The app's `objects` option (on the Configuration tab) is only read once, on
+the first start of 0.4.0 or later, to import existing objects into the panel.
+After that it is ignored.
 
 ## Configuration (app options)
 
-These are set on the app's **Configuration** tab. Changes apply when the app
-restarts.
-
-### Objects
-
-Each entry under `objects` is one tagged thing to watch:
-
-```yaml
-objects:
-  - name: Bin
-    tag_id: 5
-    source: go2rtc
-    go2rtc_stream: car_port_high
-  - name: Recycling
-    tag_id: 7
-    source: go2rtc
-    go2rtc_stream: car_port_high     # same camera as Bin: frames are shared
-  - name: Car
-    id: car
-    tag_id: 12
-    source: ha_camera
-    camera_entity: camera.driveway
-```
-
-| Field | Required | What it does |
-|---|---|---|
-| `name` | yes | What the tag is on. It names the device ("TagSense Bin") and its main sensor. |
-| `id` | no | A short, stable identifier (lowercase letters, digits, `_`). It is used in entity IDs, MQTT topics and the data folder. If you leave it out, it is made from the name, so **renaming an object without an `id` creates new entities**. Set an `id` if you might rename it later. |
-| `tag_id` | yes | The tag16h5 ID on this object (0–29). Two objects on the same camera need different IDs. The same ID on different cameras is fine. |
-| `source` | yes | `go2rtc` fetches `<go2rtc_url>/api/frame.jpeg?src=<go2rtc_stream>`. `ha_camera` fetches `camera_entity` through Home Assistant's camera proxy. |
-| `go2rtc_stream` | for `go2rtc` | The go2rtc stream name. List them at `<go2rtc_url>/api/streams`. Choose the highest-resolution stream that connects directly to the camera. |
-| `camera_entity` | for `ha_camera` | The camera entity, for example `camera.driveway`. Also used as the fallback when `fallback_source` is `ha_camera`. |
-
-Objects with the same source and stream (or entity) share one camera worker:
-each burst is fetched once and judged by all of them. Different cameras are
-checked in parallel. The other objects' tags on a shared camera are
-recognised, so they are not logged as phantoms.
-
-All other options below apply to every object.
+These are set on the app's **Configuration** tab, apply to every object, and
+take effect when the app restarts.
 
 ### Frame source
 
@@ -171,14 +187,14 @@ All other options below apply to every object.
 
 ## Settings you can change live (entities)
 
-Each object's device page has its own copy of these. They take effect
-immediately, without a restart, and are stored by the app so they survive
-restarts.
+Each object's device page has its own copy of these, and the panel shows the
+same settings. They take effect immediately, without a restart, and are
+stored by the app so they survive restarts.
 
 | Entity | Default | What it does |
 |---|---|---|
 | **Poll interval** | `60` s | How often a check runs on its own. `0` means checks only run when **Check now** is pressed. Values from 1 to 9 are raised to 10. The timer restarts after each check, so the real spacing is the interval plus the check duration. |
-| **Crop x1 / y1 / x2 / y2** | `0.65 / 0.45 / 1.0 / 1.0` | The part of the frame that is searched, as fractions of width and height (0 = left/top, 1 = right/bottom). The default is the bottom-right area of the development camera, so **set it for your scene**, or use `0 / 0 / 1 / 1` to search the whole frame (slower). It must cover **every** spot where the object might be. A tighter crop is faster and has fewer places for phantoms to appear, but if it is too tight, an object moved slightly reads as absent. If x2 ≤ x1 or y2 ≤ y1, the default is used and a warning is raised. |
+| **Crop x1 / y1 / x2 / y2** | `0.65 / 0.45 / 1.0 / 1.0` | The part of the frame that is searched, as fractions of width and height (0 = left/top, 1 = right/bottom). The default is the bottom-right area of the development camera, so **set it for your scene**: the panel's search area editor is the easiest way. `0 / 0 / 1 / 1` searches the whole frame (slower). It must cover **every** spot where the object might be. A tighter crop is faster and has fewer places for phantoms to appear, but if it is too tight, an object moved slightly reads as absent. If x2 ≤ x1 or y2 ≤ y1, the default is used and a warning is raised. |
 | **Enabled** | on | Off pauses all checks. The main sensor goes unavailable and Status shows `unknown` with reason `disabled`. |
 | **Check now** | — | Runs a check immediately. It is intended for automations, for example when Frigate sees a person leave the area. |
 
@@ -221,23 +237,14 @@ rejects anything. If the object's spot changes permanently, the average follows
 it within about 20 hits. The *Warning* sensor's attributes show what has been
 learned.
 
-## Upgrading from 0.2.x
+## Upgrading
 
-0.3.0 changes how objects are configured and how entities are named:
-
-- **Your old options keep working for now.** While `objects` is empty, the
-  0.2 single-object options (`object_name`, `source`, `go2rtc_stream`,
-  `camera_entity`, `tag_id`) are read as one object. A warning is logged, and
-  support will be removed in a future release. To move over, add one entry
-  under `objects` with the same values, then remove the old options.
-- **Entity IDs change.** On first start, the old single "TagSense" device and
-  its entities are removed, and a "TagSense `<name>`" device is created. The
-  main sensor keeps its ID if the object is named the same (for example
-  `binary_sensor.tagsense_bin`). The other entities gain the object's ID
-  (`sensor.tagsense_status` becomes `sensor.tagsense_bin_status`). Update any
-  automations or dashboards that use them.
-- **State carries over.** Saved state, live settings (crop, poll interval) and
-  the learned reference move to the first object.
+- **From 0.3.x:** on first start, the objects in the `objects` option are
+  imported into the panel. Entities, state and settings carry over unchanged.
+  From then on, manage objects in the panel. The option is ignored, and can
+  be cleared.
+- **From 0.2.x or earlier:** install 0.3.x first, so its migration runs.
+  0.4.0 no longer reads the old single-object options.
 
 ## Limitations
 

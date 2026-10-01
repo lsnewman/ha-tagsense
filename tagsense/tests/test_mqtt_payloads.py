@@ -55,14 +55,19 @@ def test_expected_components_and_attribute_topics():
     assert all("_attrs" not in p for p in cfgs.values())
 
 
-def test_legacy_topics_cover_old_entities():
-    old = m.legacy_topics()
-    assert "homeassistant/binary_sensor/tagsense/bin/config" in old
-    assert "homeassistant/sensor/tagsense/status/config" in old
-    assert "tagsense/set/poll_interval" in old
-    # never clears new-style topics
-    new = {t for t, _ in m.discovery_configs("1", "bin", "Bin")}
-    assert not new & set(old)
+def test_remove_clears_discovery_and_retained_topics():
+    class C:
+        version = "1"
+        msgs = []
+
+        def pub(self, t, p, retain=True):
+            self.msgs.append((t, p))
+    c = C()
+    m.ObjectPublisher(c, "bin", "Bin").remove()
+    cleared = {t for t, p in c.msgs if p == b""}
+    assert {t for t, _ in m.discovery_configs("1", "bin", "Bin")} <= cleared
+    assert {"tagsense/bin/presence", "tagsense/bin/set/crop_x1", "tagsense/bin/setting/enabled"} <= cleared
+    assert all(t.startswith(("tagsense/bin/", "homeassistant/")) for t in cleared)
 
 
 def test_fmt():

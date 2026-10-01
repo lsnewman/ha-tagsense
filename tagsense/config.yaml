@@ -1,5 +1,5 @@
 name: TagSense
-version: "0.3.0"
+version: "0.4.0"
 slug: tagsense
 description: Detect whether tagged objects (bin, car, chair...) are in place from AprilTags, published to HA via MQTT.
 url: https://github.com/lsnewman/ha-tagsense
@@ -11,6 +11,10 @@ init: false
 services:
   - mqtt:want
 homeassistant_api: true
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:tag-search
+panel_title: TagSense
 options:
   objects: []
   go2rtc_url: ""
@@ -26,6 +30,7 @@ options:
   sanity_min_h: 0.02
   log_level: info
 schema:
+  # Imported once into the TagSense panel on first start, then ignored.
   objects:
     - name: str
       id: str?
@@ -49,9 +54,3 @@ schema:
   mqtt_port: port?
   mqtt_username: str?
   mqtt_password: password?
-  # Deprecated 0.2.x single-object options: used only while 'objects' is empty.
-  object_name: str?
-  source: list(go2rtc|ha_camera)?
-  go2rtc_stream: str?
-  camera_entity: str?
-  tag_id: int(0,29)?

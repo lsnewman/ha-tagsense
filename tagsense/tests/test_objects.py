@@ -3,7 +3,8 @@ import json
 import pytest
 
 from app.main import camera_key
-from app.objects import ConfigError, migrate_legacy_files, parse_objects, slugify
+from app.objects import (ConfigError, ObjectStore, parse_list, parse_one, slugify,
+                         unique_id)
 
 
 def obj(**kw):
@@ -13,69 +14,62 @@ def obj(**kw):
 
 
 def test_parse_list_and_generated_ids():
-    objs, legacy = parse_objects({"objects": [obj(), obj(name="Green Waste!", tag_id=7)]})
-    assert not legacy
+    objs = parse_list([obj(), obj(name="Green Waste!", tag_id=7)])
     assert [o.id for o in objs] == ["bin", "green_waste"]
     assert objs[1].tag_id == 7
 
 
 def test_explicit_id_wins():
-    objs, _ = parse_objects({"objects": [obj(name="Rubbish bin", id="bin")]})
-    assert objs[0].id == "bin" and objs[0].name == "Rubbish bin"
+    assert parse_one(obj(name="Rubbish bin", id="bin")).id == "bin"
 
 
 @pytest.mark.parametrize("bad,msg", [
     ({"name": ""}, "name is required"),
+    ({"name": "x" * 61}, "too long"),
     ({"id": "Bad Id"}, "id"),
     ({"id": "availability"}, "id"),
     ({"tag_id": 30}, "0-29"),
+    ({"tag_id": "five"}, "number"),
     ({"source": "rtsp"}, "source"),
     ({"go2rtc_stream": ""}, "go2rtc_stream is required"),
     ({"source": "ha_camera"}, "camera_entity is required"),
 ])
 def test_validation_errors(bad, msg):
     with pytest.raises(ConfigError, match=msg):
-        parse_objects({"objects": [obj(**bad)]})
+        parse_one(obj(**bad))
 
 
 def test_duplicate_ids_and_same_tag_on_same_camera_rejected():
     with pytest.raises(ConfigError, match="duplicate object id"):
-        parse_objects({"objects": [obj(tag_id=5), obj(tag_id=6)]})
+        parse_list([obj(tag_id=5), obj(tag_id=6)])
     with pytest.raises(ConfigError, match="same camera"):
-        parse_objects({"objects": [obj(), obj(name="Other", tag_id=5)]})
-    # same tag on a different camera is fine
-    parse_objects({"objects": [obj(), obj(name="Other", go2rtc_stream="cam2")]})
+        parse_list([obj(), obj(name="Other", tag_id=5)])
+    parse_list([obj(), obj(name="Other", go2rtc_stream="cam2")])     # other camera: fine
 
 
-def test_legacy_flat_options_become_one_object():
-    objs, legacy = parse_objects({"objects": [], "object_name": "Bin", "tag_id": 5,
-                                  "source": "go2rtc", "go2rtc_stream": "car_port_high"})
-    assert legacy and len(objs) == 1
-    assert (objs[0].id, objs[0].go2rtc_stream) == ("bin", "car_port_high")
-
-
-def test_nothing_configured_is_an_error():
-    with pytest.raises(ConfigError, match="no objects"):
-        parse_objects({"objects": []})
-
-
-def test_slugify():
+def test_slug_and_unique_id():
     assert slugify("  Recycling Bin #2 ") == "recycling_bin_2"
     assert slugify("!!!") == "object"
+    assert unique_id("bin", {"bin", "bin_2"}) == "bin_3"
+    assert len(unique_id("x" * 40, {"x" * 40})) == 40
 
 
 def test_camera_grouping_key():
-    a, b, c = parse_objects({"objects": [obj(), obj(name="Rec", tag_id=7),
-                                         obj(name="Car", tag_id=5, go2rtc_stream="cam2")]})[0]
+    a, b, c = parse_list([obj(), obj(name="Rec", tag_id=7), obj(name="Car", go2rtc_stream="cam2")])
     assert camera_key(a, "none") == camera_key(b, "none") != camera_key(c, "none")
 
 
-def test_migrate_legacy_files(tmp_path):
-    for f, body in (("state.json", {"state": "present"}), ("settings.json", {"poll_interval": 30})):
-        (tmp_path / f).write_text(json.dumps(body))
-    first = parse_objects({"objects": [obj()]})[0][0]
-    assert migrate_legacy_files(str(tmp_path), first)
-    target = tmp_path / "objects" / "bin"
-    assert json.loads((target / "state.json").read_text()) == {"state": "present"}
-    assert not (tmp_path / "state.json").exists()
-    assert not migrate_legacy_files(str(tmp_path), first)     # idempotent
+def test_store_imports_options_once(tmp_path):
+    store = ObjectStore(str(tmp_path))
+    objs = store.load_or_import([obj()])
+    assert [o.id for o in objs] == ["bin"]
+    assert json.loads((tmp_path / "objects.json").read_text())[0]["go2rtc_stream"] == "cam1"
+    # later starts ignore the option
+    assert [o.id for o in store.load_or_import([obj(name="Other")])] == ["bin"]
+
+
+def test_store_empty_and_invalid(tmp_path):
+    assert ObjectStore(str(tmp_path)).load_or_import([]) == []
+    (tmp_path / "objects.json").write_text(json.dumps([obj(), obj()]))
+    with pytest.raises(ConfigError):
+        ObjectStore(str(tmp_path)).load()
