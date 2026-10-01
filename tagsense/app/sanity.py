@@ -46,13 +46,18 @@ def scores(gray: np.ndarray) -> tuple[float, float, float]:
     return v, h, (v / h if h > 0 else 0.0)
 
 
+def decode_jpeg(data: bytes) -> np.ndarray | None:
+    if not data:
+        return None
+    bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    return bgr if bgr is not None and bgr.size else None
+
+
 def check_frame(data: bytes, crop: Crop = DEFAULT_CROP,
                 min_ratio: float = DEFAULT_MIN_RATIO,
                 min_h: float = DEFAULT_MIN_H) -> FrameCheck:
-    bgr = None
-    if data:
-        bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-    if bgr is None or bgr.size == 0:
+    bgr = decode_jpeg(data)
+    if bgr is None:
         return FrameCheck(ok=False, reason="decode_failed")
     return check_image(bgr, crop, min_ratio, min_h)
 

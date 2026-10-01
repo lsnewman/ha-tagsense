@@ -4,7 +4,8 @@ A Home Assistant app (formerly "add-on") that tells you whether something is
 in its usual place. Stick a printed AprilTag on it, such as a wheelie bin, a
 car, a chair or a garage door. TagSense grabs frames from a camera that can
 see the tag, looks for it, and publishes **present / absent / unknown** to
-Home Assistant through MQTT discovery. You choose what the sensor is called.
+Home Assistant through MQTT discovery. One app can watch several tagged
+objects, on one or more cameras, and each appears as its own device.
 
 It is meant as a cheap, deterministic alternative to an image classifier
 (for example a Frigate custom model) for "is the bin out?" style questions.
@@ -18,7 +19,9 @@ it either finds your specific tag or it doesn't.
 ## How it works
 
 1. **Grab a burst of frames.** A check fetches several frames (default 5, one
-   second apart) from go2rtc or a Home Assistant camera entity.
+   second apart) from go2rtc or a Home Assistant camera entity. When several
+   objects share a camera, one burst serves all of them, and each object looks
+   for its own tag in its own crop.
 2. **Discard broken frames.** Some camera streams occasionally deliver smeared
    frames full of vertical streaks. TagSense scores each frame and discards
    bad ones, so a corrupt frame is never treated as "absent". A frame where
@@ -61,10 +64,11 @@ than after several polls.
    ```
 2. Find **TagSense** in the store and click **Install**. The image is built on
    your machine, which takes a few minutes the first time.
-3. On the **Configuration** tab, set `object_name`, then either `go2rtc_url`
-   and `go2rtc_stream`, or switch `source` to `ha_camera` and set
-   `camera_entity`. Then start the app.
-4. A **TagSense** device appears under the MQTT integration.
+3. On the **Configuration** tab, add your objects under `objects` (see
+   [Objects](#objects)). If any use go2rtc, set `go2rtc_url`. Then start the
+   app.
+4. Each object appears as a **TagSense <name>** device under the MQTT
+   integration.
 
 ## The tag
 
@@ -90,27 +94,54 @@ Generator tools for tag16h5 are easy to find, and OpenCV can produce one with
 These are set on the app's **Configuration** tab. Changes apply when the app
 restarts.
 
-### General
+### Objects
 
-| Option | Default | What it does |
+Each entry under `objects` is one tagged thing to watch:
+
+```yaml
+objects:
+  - name: Bin
+    tag_id: 5
+    source: go2rtc
+    go2rtc_stream: car_port_high
+  - name: Recycling
+    tag_id: 7
+    source: go2rtc
+    go2rtc_stream: car_port_high     # same camera as Bin: frames are shared
+  - name: Car
+    id: car
+    tag_id: 12
+    source: ha_camera
+    camera_entity: camera.driveway
+```
+
+| Field | Required | What it does |
 |---|---|---|
-| `object_name` | `Object` | What the tag is on, such as `Bin`, `Car` or `Table`. It names the main sensor ("TagSense Bin"). The device stays "TagSense". The entity ID is set from the name when the sensor is first created, and later renames do not change it. You can rename the entity in Home Assistant at any time. |
+| `name` | yes | What the tag is on. It names the device ("TagSense Bin") and its main sensor. |
+| `id` | no | A short, stable identifier (lowercase letters, digits, `_`). It is used in entity IDs, MQTT topics and the data folder. If you leave it out, it is made from the name, so **renaming an object without an `id` creates new entities**. Set an `id` if you might rename it later. |
+| `tag_id` | yes | The tag16h5 ID on this object (0–29). Two objects on the same camera need different IDs. The same ID on different cameras is fine. |
+| `source` | yes | `go2rtc` fetches `<go2rtc_url>/api/frame.jpeg?src=<go2rtc_stream>`. `ha_camera` fetches `camera_entity` through Home Assistant's camera proxy. |
+| `go2rtc_stream` | for `go2rtc` | The go2rtc stream name. List them at `<go2rtc_url>/api/streams`. Choose the highest-resolution stream that connects directly to the camera. |
+| `camera_entity` | for `ha_camera` | The camera entity, for example `camera.driveway`. Also used as the fallback when `fallback_source` is `ha_camera`. |
+
+Objects with the same source and stream (or entity) share one camera worker:
+each burst is fetched once and judged by all of them. Different cameras are
+checked in parallel. The other objects' tags on a shared camera are
+recognised, so they are not logged as phantoms.
+
+All other options below apply to every object.
 
 ### Frame source
 
 | Option | Default | What it does |
 |---|---|---|
-| `source` | `go2rtc` | Where frames come from. `go2rtc` calls `<go2rtc_url>/api/frame.jpeg?src=<go2rtc_stream>`. `ha_camera` fetches `camera_entity` through Home Assistant's camera proxy. |
-| `fallback_source` | `none` | A second source to try when a fetch from the main one fails. `none` disables it. Setting it to the same value as `source` has no effect. |
-| `go2rtc_url` | *(empty)* | Base URL of go2rtc, for example `http://<frigate-hostname>:1984`. With the Frigate app, the hostname is shown on its app page. It changes if Frigate is reinstalled from a different repository. **Required when either source is `go2rtc`.** |
-| `go2rtc_stream` | *(empty)* | The go2rtc stream name. **Required for `go2rtc`.** List them at `<go2rtc_url>/api/streams`. Choose the highest-resolution stream that connects directly to the camera. |
-| `camera_entity` | *(empty)* | The camera entity used by `ha_camera`, for example `camera.driveway`. **Required for `ha_camera`.** |
+| `go2rtc_url` | *(empty)* | Base URL of go2rtc, for example `http://<frigate-hostname>:1984`. With the Frigate app, the hostname is shown on its app page. It changes if Frigate is reinstalled from a different repository. **Required if any object uses `go2rtc`.** |
+| `fallback_source` | `none` | A second source to try when a fetch from an object's main source fails. The object needs the matching field set (`camera_entity` for `ha_camera`, `go2rtc_stream` for `go2rtc`). Otherwise it runs without a fallback and a warning is logged. `none` disables it. |
 
 ### Detection
 
 | Option | Default | What it does |
 |---|---|---|
-| `tag_id` | `5` | The tag16h5 ID to look for (0–29). Every other ID is ignored, and logged as a phantom. |
 | `max_aspect` | `3.0` | **Shape gate.** A decode of `tag_id` counts only if its longest edge is at most this many times its shortest edge. A square tag stays fairly square even when seen at a steep angle (about 1.5 in the development setup, with a tag lying flat), while false decodes in gravel or texture tend to be thin slivers (about 6). Lower values reject more aggressively. Higher values are more permissive. `0` turns the gate off. The test does not depend on scale, so it works for any tag size or distance. |
 
 ### Checks and decision
@@ -140,8 +171,9 @@ restarts.
 
 ## Settings you can change live (entities)
 
-These appear on the device page and take effect immediately, without a
-restart. They are stored by the app and survive restarts.
+Each object's device page has its own copy of these. They take effect
+immediately, without a restart, and are stored by the app so they survive
+restarts.
 
 | Entity | Default | What it does |
 |---|---|---|
@@ -156,10 +188,14 @@ decodes in orange.
 
 ## Entities
 
+Each object gets its own device, **TagSense `<name>`**, with the entities
+below. Entity IDs follow the device, for example `binary_sensor.tagsense_bin`,
+`sensor.tagsense_bin_status` and `button.tagsense_bin_check_now`.
+
 | Entity | Description |
 |---|---|
-| **`<object_name>`** (`binary_sensor`, occupancy) | `on` = present, `off` = absent. **Unavailable** when the state is unknown, when TagSense is disabled, or when the app is not running. Attributes: `last_seen`, `size_px`, `centre`, `area_px`, `source`. |
-| **Status** (enum sensor) | `present`, `absent` or `unknown`, plus a `reason` attribute: `starting`, `restored`, `tag_seen`, `inconclusive`, `pending`, `no_tag`, `fetch_failed`, `all_frames_invalid`, `disabled`. The other attributes describe the last check (trigger, frames, valid, hits). |
+| **TagSense `<name>`** (`binary_sensor`, occupancy) | `on` = present, `off` = absent. **Unavailable** when the state is unknown, when TagSense is disabled, or when the app is not running. Attributes: `last_seen`, `size_px`, `centre`, `area_px`, `tag_id`, `source`. |
+| **Status** (enum sensor) | `present`, `absent` or `unknown`, plus a `reason` attribute: `starting`, `restored`, `tag_seen`, `inconclusive`, `pending`, `no_tag`, `fetch_failed`, `all_frames_invalid`, `disabled`. The other attributes describe the last check: frames, valid, hits, and the trigger (`startup`, `poll`, `manual`, `confirm`, or `shared` when another object on the same camera requested the burst). |
 | **Last crop** (image) | The latest crop with annotations. Green: the tag, with its ID, size and a red dot on corner 0. Orange: phantom or rejected decodes. |
 | Diagnostics | Last source, frame resolution, last check, last error, warning, fetch time, detect time, fetch failures, discard rate, unique frames, phantom decodes, tag size, sanity ratio, miss streak, crop brightness, crop contrast. |
 
@@ -184,6 +220,24 @@ That pattern often means a phantom decode of your ID. It only warns and never
 rejects anything. If the object's spot changes permanently, the average follows
 it within about 20 hits. The *Warning* sensor's attributes show what has been
 learned.
+
+## Upgrading from 0.2.x
+
+0.3.0 changes how objects are configured and how entities are named:
+
+- **Your old options keep working for now.** While `objects` is empty, the
+  0.2 single-object options (`object_name`, `source`, `go2rtc_stream`,
+  `camera_entity`, `tag_id`) are read as one object. A warning is logged, and
+  support will be removed in a future release. To move over, add one entry
+  under `objects` with the same values, then remove the old options.
+- **Entity IDs change.** On first start, the old single "TagSense" device and
+  its entities are removed, and a "TagSense `<name>`" device is created. The
+  main sensor keeps its ID if the object is named the same (for example
+  `binary_sensor.tagsense_bin`). The other entities gain the object's ID
+  (`sensor.tagsense_status` becomes `sensor.tagsense_bin_status`). Update any
+  automations or dashboards that use them.
+- **State carries over.** Saved state, live settings (crop, poll interval) and
+  the learned reference move to the first object.
 
 ## Limitations
 

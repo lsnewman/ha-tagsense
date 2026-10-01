@@ -2,6 +2,24 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.3.0
+
+- **Multiple objects.** New `objects` list: each entry has a name, optional
+  `id`, `tag_id` and its own source. Each object is its own HA device
+  ("TagSense <name>") with the full entity set, its own crop, poll interval,
+  state and learned reference.
+- Objects on the same camera share bursts: one fetch, judged by each object
+  with its own crop and tag. Different cameras run in parallel. Other objects'
+  tags on a shared camera are not reported as phantoms.
+- **Breaking: entity IDs.** The old single "TagSense" device is removed on
+  first start; entities move to "TagSense <name>" (e.g.
+  `sensor.tagsense_status` -> `sensor.tagsense_bin_status`). The main sensor
+  keeps `binary_sensor.tagsense_<id>`.
+- 0.2 single-object options still work while `objects` is empty (deprecated).
+  State, settings and learned reference migrate to the first object.
+- New `shared` check trigger in the status attributes; `tag_id` added to the
+  main sensor's attributes.
+
 ## 0.2.0
 
 - Object-agnostic: new `object_name` option names the main sensor (e.g. "Bin",

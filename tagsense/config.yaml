@@ -1,7 +1,7 @@
 name: TagSense
-version: "0.2.0"
+version: "0.3.0"
 slug: tagsense
-description: Detect whether a tagged object (bin, car, chair...) is in place from an AprilTag, published to HA via MQTT.
+description: Detect whether tagged objects (bin, car, chair...) are in place from AprilTags, published to HA via MQTT.
 url: https://github.com/lsnewman/ha-tagsense
 arch:
   - amd64
@@ -12,13 +12,9 @@ services:
   - mqtt:want
 homeassistant_api: true
 options:
-  object_name: Object
-  source: go2rtc
-  fallback_source: none
+  objects: []
   go2rtc_url: ""
-  go2rtc_stream: ""
-  camera_entity: ""
-  tag_id: 5
+  fallback_source: none
   max_aspect: 3.0
   burst_size: 5
   burst_interval_s: 1.0
@@ -30,13 +26,15 @@ options:
   sanity_min_h: 0.02
   log_level: info
 schema:
-  object_name: str
-  source: list(go2rtc|ha_camera)
-  fallback_source: list(none|go2rtc|ha_camera)
+  objects:
+    - name: str
+      id: str?
+      tag_id: int(0,29)
+      source: list(go2rtc|ha_camera)
+      go2rtc_stream: str?
+      camera_entity: str?
   go2rtc_url: str
-  go2rtc_stream: str
-  camera_entity: str
-  tag_id: int(0,29)
+  fallback_source: list(none|go2rtc|ha_camera)
   max_aspect: float(0,20)
   burst_size: int(1,20)
   burst_interval_s: float(0,10)
@@ -51,3 +49,9 @@ schema:
   mqtt_port: port?
   mqtt_username: str?
   mqtt_password: password?
+  # Deprecated 0.2.x single-object options: used only while 'objects' is empty.
+  object_name: str?
+  source: list(go2rtc|ha_camera)?
+  go2rtc_stream: str?
+  camera_entity: str?
+  tag_id: int(0,29)?

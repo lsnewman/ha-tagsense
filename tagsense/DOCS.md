@@ -33,15 +33,40 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 
 ## Configuration
 
+### Objects
+
+Add one entry under `objects` for each tagged thing:
+
+```yaml
+objects:
+  - name: Bin
+    tag_id: 5
+    source: go2rtc
+    go2rtc_stream: car_port_high
+  - name: Car
+    id: car
+    tag_id: 12
+    source: ha_camera
+    camera_entity: camera.driveway
+```
+
+| Field | Notes |
+|---|---|
+| `name` | Required. Names the device ("TagSense Bin") and its main sensor. |
+| `id` | Optional stable ID (a-z, 0-9, `_`), used in entity IDs and MQTT topics. Made from the name if left out, so renaming creates new entities unless you set it. |
+| `tag_id` | Required. tag16h5 ID, 0–29. Must be unique per camera. |
+| `source` | `go2rtc` or `ha_camera` |
+| `go2rtc_stream` | Required for `go2rtc`. A stream name from `http://<frigate-hostname>:1984/api/streams`. |
+| `camera_entity` | Required for `ha_camera`, and used as the fallback when `fallback_source` is `ha_camera`. |
+
+Objects on the same stream or camera share each burst of frames.
+
+### Global options
+
 | Option | Default | Notes |
 |---|---|---|
-| `object_name` | `Object` | What the tag is on, such as `Bin`. It names the main sensor. |
-| `source` | `go2rtc` | `go2rtc` or `ha_camera` |
-| `fallback_source` | `none` | Used when the primary fetch fails |
-| `go2rtc_url` | *(empty)* | e.g. `http://<frigate-hostname>:1984`. The Frigate app's hostname is on its app page, and it changes if Frigate is reinstalled under another slug. |
-| `go2rtc_stream` | *(empty)* | A stream name from `http://<frigate-hostname>:1984/api/streams` |
-| `camera_entity` | *(empty)* | For the `ha_camera` source |
-| `tag_id` | `5` | tag16h5 ID, 0–29. A change applies on restart. |
+| `go2rtc_url` | *(empty)* | e.g. `http://<frigate-hostname>:1984`. The Frigate app's hostname is on its app page, and it changes if Frigate is reinstalled under another slug. Required if any object uses go2rtc. |
+| `fallback_source` | `none` | Used when an object's primary fetch fails |
 | `max_aspect` | `3.0` | Shape gate: a decode of `tag_id` whose longest/shortest edge ratio is above this is rejected (gravel phantoms decode as thin slivers). The tag seen obliquely measured about 1.5. 0 disables it. |
 | `burst_size` | `5` | Frames per check |
 | `burst_interval_s` | `1.0` | Seconds between frames in a burst |
@@ -55,9 +80,9 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 
 ## Entities
 
-All entities belong to one **TagSense** device.
+Each object is its own device, **TagSense `<name>`**, with these entities:
 
-- **`<object_name>`** (`binary_sensor`, occupancy): on = present, off = absent. It is
+- **TagSense `<name>`** (`binary_sensor`, occupancy): on = present, off = absent. It is
   **unavailable** when the state is unknown, when TagSense is disabled, or
   when the app is not running. Attributes: `last_seen`, `size_px`, `centre`,
   `area_px`, `source`.

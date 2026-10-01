@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .detector import Crop, Detection, Detector
-from .sanity import DEFAULT_MIN_H, DEFAULT_MIN_RATIO, FrameCheck, check_frame
+from .sanity import (DEFAULT_MIN_H, DEFAULT_MIN_RATIO, FrameCheck, check_image,
+                     decode_jpeg)
 
 
 @dataclass
@@ -22,9 +25,17 @@ class FrameResult:
         return self.check.ok or self.hit
 
 
+def analyse_image(bgr: np.ndarray | None, detector: Detector, crop: Crop,
+                  min_ratio: float = DEFAULT_MIN_RATIO,
+                  min_h: float = DEFAULT_MIN_H) -> FrameResult:
+    """Sanity-check and detect on an already decoded frame (None = undecodable)."""
+    if bgr is None:
+        return FrameResult(FrameCheck(ok=False, reason="decode_failed"), None)
+    chk = check_image(bgr, crop, min_ratio, min_h)
+    return FrameResult(chk, detector.detect(bgr, crop))
+
+
 def analyse(data: bytes, detector: Detector, crop: Crop,
             min_ratio: float = DEFAULT_MIN_RATIO,
             min_h: float = DEFAULT_MIN_H) -> FrameResult:
-    chk = check_frame(data, crop, min_ratio, min_h)
-    det = detector.detect(chk.bgr, crop) if chk.bgr is not None else None
-    return FrameResult(chk, det)
+    return analyse_image(decode_jpeg(data), detector, crop, min_ratio, min_h)

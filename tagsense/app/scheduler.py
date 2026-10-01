@@ -1,19 +1,21 @@
 """When to run the next check. Pure logic; the worker thread supplies the clock.
 
-Triggers: startup, poll, manual (button), confirm (follow-up to a manual miss).
+Triggers: startup, poll, manual (button), confirm (follow-up to a manual miss),
+shared (a burst requested by another object on the same camera).
 Several due triggers merge into one check, labelled with the highest priority.
 
 Confirmation chain: a manual or confirm check that is a clean miss, with the
 streak still short of absent_checks, schedules a confirm check confirm_delay_s
 later. The chain stops on a hit, an inconclusive or failed check, reaching
 absent, or being disabled. A manual press restarts it. Polls and the startup
-check never start a chain.
+check never start a chain, and nor do shared checks.
 """
 from __future__ import annotations
 
 from .decision import MISS
 
 STARTUP, POLL, MANUAL, CONFIRM = "startup", "poll", "manual", "confirm"
+SHARED = "shared"   # another object on the same camera triggered the burst
 _PRIORITY = {MANUAL: 0, STARTUP: 1, CONFIRM: 2, POLL: 3}
 
 
