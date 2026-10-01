@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# TagSense local test data and outputs
+test-frames/
+*.annotated.jpg
+.DS_Store

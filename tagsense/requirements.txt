@@ -1,0 +1,4 @@
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+paho-mqtt==2.1.0
+requests==2.34.2

@@ -1,0 +1,53 @@
+name: TagSense
+version: "0.2.0"
+slug: tagsense
+description: Detect whether a tagged object (bin, car, chair...) is in place from an AprilTag, published to HA via MQTT.
+url: https://github.com/lsnewman/ha-tagsense
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+services:
+  - mqtt:want
+homeassistant_api: true
+options:
+  object_name: Object
+  source: go2rtc
+  fallback_source: none
+  go2rtc_url: ""
+  go2rtc_stream: ""
+  camera_entity: ""
+  tag_id: 5
+  max_aspect: 3.0
+  burst_size: 5
+  burst_interval_s: 1.0
+  present_min_hits: 1
+  absent_checks: 3
+  confirm_delay_s: 45
+  unknown_after_failures: 2
+  sanity_min_ratio: 0.5
+  sanity_min_h: 0.02
+  log_level: info
+schema:
+  object_name: str
+  source: list(go2rtc|ha_camera)
+  fallback_source: list(none|go2rtc|ha_camera)
+  go2rtc_url: str
+  go2rtc_stream: str
+  camera_entity: str
+  tag_id: int(0,29)
+  max_aspect: float(0,20)
+  burst_size: int(1,20)
+  burst_interval_s: float(0,10)
+  present_min_hits: int(1,3)
+  absent_checks: int(1,20)
+  confirm_delay_s: int(5,600)
+  unknown_after_failures: int(1,5)
+  sanity_min_ratio: float(0,1)
+  sanity_min_h: float(0,10)
+  log_level: list(debug|info|warning|error)
+  mqtt_host: str?
+  mqtt_port: port?
+  mqtt_username: str?
+  mqtt_password: password?
