@@ -18,7 +18,7 @@ import numpy as np
 
 from . import decision as dec
 from .analysis import analyse_image
-from .detector import Detector, annotate, validate_crop
+from .detector import Detector, Phantom, annotate, validate_crop
 from .mqtt_ha import ObjectPublisher, fmt
 from .objects import ObjectConfig, object_dir
 from .reference import Reference
@@ -64,6 +64,7 @@ class Tuning:
     confirm_delay_s: float
     sanity_min_ratio: float
     sanity_min_h: float
+    min_size_ratio: float = 0.5     # 0 = off
 
 
 class TrackedObject:
@@ -170,6 +171,7 @@ class TrackedObject:
         t = self.tuning
         results = [analyse_image(img, self.detector, crop, t.sanity_min_ratio, t.sanity_min_h)
                    for img in burst.images]
+        self._size_gate(results)
         frames = burst.frames
         valid = [r for r in results if r.valid]
         hits = [r for r in results if r.hit]
@@ -196,9 +198,9 @@ class TrackedObject:
                 log.warning("[%s] shape gate: %s", self.id, ph.describe())
             else:
                 log.info("[%s] phantom candidate: %s", self.id, ph.describe())
-        if any(ph.rejected_target for ph in phantoms):
-            warnings.append(f"tag id {self.detector.tag_id} decode rejected by shape gate "
-                            f"(aspect > {self.detector.max_aspect:g})")
+        if rejected := [ph for ph in phantoms if ph.rejected_target]:
+            warnings.append(f"tag id {self.detector.tag_id} decode rejected by shape gate: "
+                            + "; ".join(sorted({ph.reason for ph in rejected})))
         stats_src = valid or decoded
         now = time.time()
         if phantoms:
@@ -271,6 +273,22 @@ class TrackedObject:
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
                  outcome, value, reason, self.decision.miss_streak)
         return outcome
+
+    def _size_gate(self, results):
+        """Shape gate, part 2: reject target decodes far smaller than the learned
+        usual size (phantoms in texture decode tiny). Off until 10 hits are learned."""
+        ref, limit = self.reference, self.tuning.min_size_ratio
+        if limit <= 0 or not ref.ready or ref.size <= 0:
+            return
+        for r in results:
+            d = r.det
+            if d is None or not d.found:
+                continue
+            ratio = (d.size_px / d.frame_wh[1]) / ref.size
+            if ratio < limit:
+                d.others.append(Phantom(d.tag_id, d.corners, d.frame_wh, rejected_target=True,
+                                        reason=f"size {ratio:.0%} of usual < {limit:.0%}"))
+                d.found, d.corners = False, None
 
     # --- web UI -----------------------------------------------------------
 

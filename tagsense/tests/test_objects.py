@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from app.main import camera_key
 from app.objects import (ConfigError, ObjectStore, parse_list, parse_one, slugify,
                          unique_id)
 
@@ -56,7 +55,22 @@ def test_slug_and_unique_id():
 
 def test_camera_grouping_key():
     a, b, c = parse_list([obj(), obj(name="Rec", tag_id=7), obj(name="Car", go2rtc_stream="cam2")])
-    assert camera_key(a, "none") == camera_key(b, "none") != camera_key(c, "none")
+    assert a.camera_key == b.camera_key != c.camera_key
+
+
+def test_fallback():
+    o = parse_one(obj(fallback=True, camera_entity="camera.x"))
+    assert o.fallback_source == "ha_camera"
+    assert o.camera_key == ("go2rtc", "cam1", "fallback", "camera.x")
+    assert parse_one(obj()).fallback_source is None
+    assert parse_one(obj(fallback="false")).fallback is False
+    with pytest.raises(ConfigError, match="camera_entity to fall back to"):
+        parse_one(obj(fallback=True))
+    with pytest.raises(ConfigError, match="go2rtc_stream to fall back to"):
+        parse_one(obj(source="ha_camera", camera_entity="camera.x", go2rtc_stream="", fallback=True))
+    # same tag on the same primary camera still conflicts, fallback or not
+    with pytest.raises(ConfigError, match="same camera"):
+        parse_list([obj(), obj(name="B", fallback=True, camera_entity="camera.x")])
 
 
 def test_store_imports_options_once(tmp_path):

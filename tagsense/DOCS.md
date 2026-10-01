@@ -44,6 +44,12 @@ the live frame. Changes apply straight away.
   later. Renaming keeps the ID, so the entities stay the same.
 - Objects on the same camera need different tag IDs, and share each burst of
   frames.
+- **Fallback** (per object): if the main source fails, the other one is tried,
+  either the HA camera entity for a go2rtc object, or the go2rtc stream for a
+  camera object.
+- **Print tag** on the object's page: PNG for paper, or SVG in millimetres for
+  a cutter or two-colour 3D print. The white margin can be turned off if the
+  tag sits on a light surface.
 - The `objects` option on this tab is only used once, to import objects on
   the first start of 0.4.0. After that it is ignored.
 
@@ -52,11 +58,11 @@ the live frame. Changes apply straight away.
 | Option | Default | Notes |
 |---|---|---|
 | `go2rtc_url` | *(empty)* | e.g. `http://<frigate-hostname>:1984`. The Frigate app's hostname is on its app page, and it changes if Frigate is reinstalled under another slug. Required if any object uses go2rtc. |
-| `fallback_source` | `none` | Used when an object's primary fetch fails |
-| `max_aspect` | `3.0` | Shape gate: a decode of `tag_id` whose longest/shortest edge ratio is above this is rejected (gravel phantoms decode as thin slivers). The tag seen obliquely measured about 1.5. 0 disables it. |
+| `max_aspect` | `2.0` | Shape gate: a read of the object's tag whose longest/shortest edge ratio is above this is rejected (gravel phantoms decode as slivers, measured 2.2-6; the real tag about 1.5). 0 disables it. |
+| `min_size_ratio` | `0.5` | Shape gate: once 10 sightings are learned, a read of the object's tag smaller than this fraction of its usual size is rejected. 0 disables it. |
 | `burst_size` | `5` | Frames per check |
 | `burst_interval_s` | `1.0` | Seconds between frames in a burst |
-| `present_min_hits` | `1` | Frames in one burst that must decode the tag to report present |
+| `present_min_hits` | `2` | Frames in one burst that must decode the tag to report present. 2 stops a single stray read flipping the state. |
 | `absent_checks` | `3` | Consecutive clean-miss checks before reporting absent |
 | `confirm_delay_s` | `45` | Delay between confirmation checks after a *Check now* miss |
 | `unknown_after_failures` | `2` | Consecutive checks with no usable frame before reporting unknown |

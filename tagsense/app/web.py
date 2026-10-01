@@ -15,14 +15,14 @@ from urllib.parse import parse_qs, urlparse
 
 from .objects import ConfigError, ObjectConfig, parse_one, slugify, unique_id
 from .sources import FetchError, list_go2rtc_streams, list_ha_cameras
-from .tagprint import tag_png
+from .tagprint import tag_png, tag_svg
 
 log = logging.getLogger("tagsense.web")
 
 INGRESS_IPS = {"172.30.32.2"}
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 64 * 1024
-CONFIG_FIELDS = ("name", "tag_id", "source", "go2rtc_stream", "camera_entity")
+CONFIG_FIELDS = ("name", "tag_id", "source", "go2rtc_stream", "camera_entity", "fallback")
 
 
 class ApiError(Exception):
@@ -146,7 +146,7 @@ ROUTES = [
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/history", "history"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/frame\.jpg", "frame"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/(?P<kind>last|phantom)\.jpg", "image"),
-    ("GET", r"/api/tag/(?P<tag>\d+)\.png", "tag"),
+    ("GET", r"/api/tag/(?P<tag>\d+)\.(?P<fmt>png|svg)", "tag"),
 ]
 
 
@@ -157,8 +157,15 @@ def make_handler(api: Api, allow_all: bool):
         def log_message(self, fmt, *args):
             log.debug("%s " + fmt, self.client_address[0], *args)
 
+        _disposition = None
+
+        def _attachment(self, filename: str):
+            self._disposition = f'attachment; filename="{filename}"'
+
         def _send(self, status: int, body: bytes, ctype: str, cache: bool = False):
             self.send_response(status)
+            if self._disposition:
+                self.send_header("Content-Disposition", self._disposition)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "max-age=3600" if cache else "no-store")
@@ -199,8 +206,16 @@ def make_handler(api: Api, allow_all: bool):
             kw = match.groupdict()
             try:
                 if name == "tag":
-                    cell = int((query.get("cell") or ["100"])[0])
-                    return self._send(200, tag_png(int(kw["tag"]), cell), "image/png", cache=True)
+                    q = lambda k, d: (query.get(k) or [d])[0]
+                    tag, quiet = int(kw["tag"]), q("quiet", "1") != "0"
+                    if kw["fmt"] == "svg":
+                        size = float(q("size_mm", "100"))
+                        body = tag_svg(tag, size, quiet)
+                        self._attachment(f"tagsense-tag{tag}-{size:g}mm{'' if quiet else '-noborder'}.svg")
+                        return self._send(200, body, "image/svg+xml", cache=True)
+                    body = tag_png(tag, int(q("cell", "100")), label=q("label", "1") != "0",
+                                   quiet=quiet)
+                    return self._send(200, body, "image/png", cache=True)
                 if name == "frame":
                     age = float((query.get("max_age") or ["0"])[0])
                     return self._send(200, api.frame(kw["oid"], age), "image/jpeg")

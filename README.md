@@ -30,7 +30,8 @@ it either finds your specific tag or it doesn't.
    the tag is found always counts, whatever its score.
 3. **Look for the tag** in a configurable crop of the frame, using OpenCV's
    AprilTag (`tag16h5`) detector. Decodes with an implausible shape are
-   rejected (see `max_aspect`). Decodes of other tag IDs are ignored, but
+   rejected: too elongated (`max_aspect`) or far smaller than usual
+   (`min_size_ratio`). Decodes of other tag IDs are ignored, but
    logged and drawn on the debug image as "phantoms".
 4. **Decide, with debounce.**
    - Seeing the tag is strong evidence, so **present** is reported straight
@@ -97,8 +98,9 @@ logged-in Home Assistant users can open it.
 - **Diagnostics:** fetch and detect times, discard rate, sanity ratio, crop
   brightness and contrast, fetch errors, and how much position data has been
   learned.
-- **Print tag:** a printable PNG of the object's tag16h5 ID, with the white
-  margin it needs.
+- **Print tag:** the object's tag16h5 ID as a **PNG** for paper, or an
+  **SVG** sized in millimetres for a cutter or a 3D print. The white margin
+  can be turned off. See [The tag](#the-tag).
 - **Delete:** removes the object, its Home Assistant entities and its saved
   state.
 
@@ -108,8 +110,10 @@ logged-in Home Assistant users can open it.
   cells, so it decodes at small sizes and steep angles. Its trade-off is that
   random textures occasionally decode as a valid ID. The ID filter and shape
   gate handle that.
-- **Quiet zone:** leave a white margin around the black border, about as wide
-  as the border itself. Without it the tag will not decode.
+- **Quiet zone:** the black border needs a light area around it, about one
+  cell wide (a cell is a sixth of the black square). Without it the tag will
+  not decode. The printed tags include a white margin for this. Leave it off
+  only if the tag will sit on a light surface, such as a white bin lid.
 - **Finish:** matte if possible. Gloss causes glare.
 - **Placement:** face the tag towards the camera if you can. If it has to lie
   flat (a bin lid has to survive the collection truck, for example), the
@@ -118,8 +122,15 @@ logged-in Home Assistant users can open it.
   ways to get more decode margin. As a reference, the development setup sees
   a flat tag at about 50 px across in a 1080p frame.
 
-The panel's **Print tag** button produces a ready-to-print tag for any ID,
-with the white margin included.
+The panel's **Print tag** card on each object's page produces:
+
+- **PNG** for paper: print it as large as the object allows, and laminate it
+  for outdoor use.
+- **SVG** in millimetres: set the black square's size. It contains two
+  separate, non-overlapping shapes, `black` (the tag) and `white` (the inner
+  white cells, plus the margin if enabled). Import it into a slicer and give
+  each shape its own filament for a two-colour 3D print, or use just the black
+  shape with a vinyl cutter.
 
 ## Objects
 
@@ -131,7 +142,7 @@ Objects are managed in the TagSense panel and stored by the app in
 | Name | What the tag is on. It names the device ("TagSense Bin") and its main sensor. It can be changed at any time. |
 | ID | A short, stable identifier (lowercase letters, digits, `_`), used in entity IDs, MQTT topics and the data folder. It is made from the name unless you type one, and **cannot be changed later**. Renaming the object keeps its ID, so its entities and history stay. |
 | Tag ID | The tag16h5 ID on this object (0–29). Two objects on the same camera need different IDs. The same ID on different cameras is fine. |
-| Camera | A **go2rtc stream** (fetched as `<go2rtc_url>/api/frame.jpeg?src=<stream>`; choose the highest-resolution stream that connects directly to the camera) or a **Home Assistant camera** entity, read through the camera proxy. A camera entity set on a go2rtc object is used as the fallback when `fallback_source` is `ha_camera`. |
+| Camera | A **go2rtc stream** (fetched as `<go2rtc_url>/api/frame.jpeg?src=<stream>`; choose the highest-resolution stream that connects directly to the camera) or a **Home Assistant camera** entity, read through the camera proxy. Tick **Fallback** to try the other source when the main one fails. A go2rtc object then falls back to its Home Assistant camera entity (often lower resolution), and a Home Assistant camera object to its go2rtc stream. |
 
 Objects on the same stream (or camera entity) share one camera worker: each
 burst is fetched once and judged by all of them, each with its own crop and
@@ -152,13 +163,13 @@ take effect when the app restarts.
 | Option | Default | What it does |
 |---|---|---|
 | `go2rtc_url` | *(empty)* | Base URL of go2rtc, for example `http://<frigate-hostname>:1984`. With the Frigate app, the hostname is shown on its app page. It changes if Frigate is reinstalled from a different repository. **Required if any object uses `go2rtc`.** |
-| `fallback_source` | `none` | A second source to try when a fetch from an object's main source fails. The object needs the matching field set (`camera_entity` for `ha_camera`, `go2rtc_stream` for `go2rtc`). Otherwise it runs without a fallback and a warning is logged. `none` disables it. |
 
 ### Detection
 
 | Option | Default | What it does |
 |---|---|---|
-| `max_aspect` | `3.0` | **Shape gate.** A decode of `tag_id` counts only if its longest edge is at most this many times its shortest edge. A square tag stays fairly square even when seen at a steep angle (about 1.5 in the development setup, with a tag lying flat), while false decodes in gravel or texture tend to be thin slivers (about 6). Lower values reject more aggressively. Higher values are more permissive. `0` turns the gate off. The test does not depend on scale, so it works for any tag size or distance. |
+| `max_aspect` | `2.0` | **Shape gate, part 1.** A read of an object's own tag counts only if its longest edge is at most this many times its shortest edge. A square tag stays fairly square even at a steep angle (1.45–1.52 in the development setup, with a tag lying flat), while phantom reads in gravel measured 2.2–6. Lower values reject more. `0` turns it off. It does not depend on scale. |
+| `min_size_ratio` | `0.5` | **Shape gate, part 2.** Once 10 sightings have been learned, a read of an object's own tag smaller than this fraction of its learned usual size is rejected. Phantom reads in texture are usually tiny (15–40% of the real tag in the development setup), while a moved object rarely shrinks by half. `0` turns it off. |
 
 ### Checks and decision
 
@@ -166,7 +177,7 @@ take effect when the app restarts.
 |---|---|---|
 | `burst_size` | `5` | Frames fetched per check (1–20). More frames make a check harder to fool with one bad frame, but each check takes longer and costs more CPU. |
 | `burst_interval_s` | `1.0` | Seconds between frames in a burst. Spacing them out lets a passing person, car or headlight clear the tag. `0` grabs them back to back. |
-| `present_min_hits` | `1` | How many frames in one burst must contain the tag before reporting **present** (1–3). `1` responds fastest. `2` or `3` give extra protection against a one-off false decode. A check with some hits but fewer than this is *inconclusive*: the state is kept and the miss count resets. Values above `burst_size` are lowered to `burst_size`. |
+| `present_min_hits` | `2` | How many frames in one burst must contain the tag before reporting **present** (1–3). `2` (the default) means a single stray read cannot flip the state, because a phantom rarely repeats across frames while a real tag shows in all of them. `1` responds to the faintest sighting. A check with some hits but fewer than this is *inconclusive*: the state is kept and the miss count resets. Values above `burst_size` are lowered to `burst_size`. |
 | `absent_checks` | `3` | Consecutive clean misses (checks with good frames but no tag) needed before reporting **absent** (1–20). Lower reacts faster, higher is more resistant to temporary obstruction. The count resets when the tag is seen. It also resets if the previous miss is older than three poll intervals (at least 5 minutes), so misses separated by an outage cannot add up to absent. |
 | `confirm_delay_s` | `45` | After **Check now** finds no tag, confirmation checks are scheduled this many seconds apart until absent is confirmed or the tag is seen. Scheduled polls never start confirmations. |
 | `unknown_after_failures` | `2` | Consecutive *failed* checks (no usable frame at all) before the state becomes **unknown** (1–5). Until then the last state is kept. `1` reports outages immediately. Higher values ride out brief stream hiccups. |

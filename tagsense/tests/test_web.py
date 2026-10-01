@@ -88,6 +88,10 @@ def test_create_update_delete_live(app, tmp_path):
     assert len(app.cameras) == 1                                   # shared camera
     assert wait_for(lambda: app.objects["recycling"].decision.last_check_ts)
     api.update("recycling", {"name": "Green bin", "id": "ignored"})
+    with pytest.raises(ApiError, match="fall back"):
+        api.update("recycling", {"fallback": True})
+    api.update("recycling", {"fallback": True, "camera_entity": "camera.x"})
+    assert app.objects["recycling"].oc.fallback and len(app.cameras) == 2
     assert app.objects["recycling"].oc.name == "Green bin"         # id unchanged
     stored = json.loads((tmp_path / "objects.json").read_text())
     assert [o["id"] for o in stored] == ["bin", "recycling"]
@@ -148,6 +152,8 @@ def test_http_layer(app):
         status, ctype, body = http(server, "GET", "/api/tag/5.png?cell=20")
         assert status == 200 and ctype == "image/png" and body[:4] == b"\x89PNG"
         assert http(server, "GET", "/api/tag/31.png")[0] == 400
+        status, ctype, body = http(server, "GET", "/api/tag/5.svg?size_mm=50&quiet=0")
+        assert status == 200 and ctype == "image/svg+xml" and b'width="50mm"' in body
         assert http(server, "POST", "/api/objects", {"name": ""})[0] == 400
         assert http(server, "GET", "/api/objects/nope/history")[0] == 404
         assert http(server, "GET", "/api/whatever")[0] == 404

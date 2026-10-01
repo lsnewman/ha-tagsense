@@ -98,7 +98,7 @@ def test_shape_gate_rejects_target_above_max_aspect():
     det = Detector(5, max_aspect=1.2).detect(frame, DEFAULT_CROP)
     assert not det.found
     assert det.other_ids == [5] and det.others[0].rejected_target
-    assert det.others[0].describe().startswith("rejected id 5 at")
+    assert det.others[0].describe().startswith("rejected id 5 (aspect 1.6 > 1.2) at")
     assert annotate(frame, det)[:2] == b"\xff\xd8"
 
 

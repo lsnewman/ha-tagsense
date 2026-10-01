@@ -17,10 +17,11 @@ import numpy as np
 DEFAULT_CROP = (0.65, 0.45, 1.0, 1.0)
 UPSCALE = 2
 
-# Shape gate: longest/shortest edge. A flat square tag seen obliquely stays
-# fairly square (measured 1.45-1.52 here); gravel phantoms decode as slivers
-# (~6). Scale-invariant, so it does not depend on tag size or distance.
-DEFAULT_MAX_ASPECT = 3.0
+# Shape gate, part 1: longest/shortest edge. A square tag seen at an angle
+# stays fairly square (measured 1.45-1.52 on a flat bin lid); phantom decodes
+# in gravel measured 2.2-6. Scale-invariant. (Part 2, the size check against
+# the learned usual size, lives in the tracker since it needs the reference.)
+DEFAULT_MAX_ASPECT = 2.0
 
 Crop = tuple[float, float, float, float]
 
@@ -78,6 +79,7 @@ class Phantom:
     corners: np.ndarray              # 4x2, full-frame px
     frame_wh: tuple[int, int]
     rejected_target: bool = False
+    reason: str = ""                 # why a target decode was rejected
 
     @property
     def centre_norm(self) -> tuple[float, float]:
@@ -94,7 +96,9 @@ class Phantom:
 
     @property
     def label(self) -> str:
-        return f"rejected id {self.id}" if self.rejected_target else f"phantom id {self.id}"
+        if self.rejected_target:
+            return f"rejected id {self.id}" + (f" ({self.reason})" if self.reason else "")
+        return f"phantom id {self.id}"
 
     def describe(self) -> str:
         cx, cy = self.centre_norm
@@ -176,7 +180,8 @@ class Detector:
             if int(i) != self.tag_id:
                 det.others.append(Phantom(int(i), full, (w, h)))
             elif self.max_aspect > 0 and quad_aspect(full) > self.max_aspect:
-                det.others.append(Phantom(int(i), full, (w, h), rejected_target=True))
+                det.others.append(Phantom(int(i), full, (w, h), rejected_target=True,
+                                          reason=f"aspect {quad_aspect(full):.1f} > {self.max_aspect:g}"))
             elif not det.found:
                 det.found = True
                 det.corners = full

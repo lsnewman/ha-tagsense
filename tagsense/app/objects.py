@@ -36,11 +36,22 @@ class ObjectConfig:
     source: str
     go2rtc_stream: str = ""
     camera_entity: str = ""
+    fallback: bool = False      # if the main source fails, try the other one
 
     @property
-    def camera_key(self) -> tuple[str, str]:
-        """Objects with the same key share frame fetches."""
-        return (self.source, self.go2rtc_stream if self.source == "go2rtc" else self.camera_entity)
+    def fallback_source(self) -> str | None:
+        if not self.fallback:
+            return None
+        return "ha_camera" if self.source == "go2rtc" else "go2rtc"
+
+    @property
+    def camera_key(self) -> tuple:
+        """Objects with the same key share frame fetches (and so one worker)."""
+        primary = self.go2rtc_stream if self.source == "go2rtc" else self.camera_entity
+        if not self.fallback:
+            return (self.source, primary)
+        backup = self.camera_entity if self.source == "go2rtc" else self.go2rtc_stream
+        return (self.source, primary, "fallback", backup)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -73,7 +84,15 @@ def parse_one(raw: dict, where: str = "object") -> ObjectConfig:
         raise ConfigError(f"{where} ({name}): go2rtc_stream is required for source go2rtc")
     if source == "ha_camera" and not entity:
         raise ConfigError(f"{where} ({name}): camera_entity is required for source ha_camera")
-    return ObjectConfig(oid, name, tag_id, source, stream, entity)
+    fallback = raw.get("fallback", False)
+    if isinstance(fallback, str):
+        fallback = fallback.strip().lower() in ("1", "true", "yes", "on")
+    fallback = bool(fallback)
+    if fallback and source == "go2rtc" and not entity:
+        raise ConfigError(f"{where} ({name}): a fallback needs a camera_entity to fall back to")
+    if fallback and source == "ha_camera" and not stream:
+        raise ConfigError(f"{where} ({name}): a fallback needs a go2rtc_stream to fall back to")
+    return ObjectConfig(oid, name, tag_id, source, stream, entity, fallback)
 
 
 def validate_list(objs: list[ObjectConfig]) -> list[ObjectConfig]:
@@ -82,7 +101,7 @@ def validate_list(objs: list[ObjectConfig]) -> list[ObjectConfig]:
         if o.id in seen_ids:
             raise ConfigError(f"duplicate object id {o.id!r}: choose a distinct id or name")
         seen_ids.add(o.id)
-        key = (o.camera_key, o.tag_id)
+        key = (o.camera_key[:2], o.tag_id)
         if key in seen_tags:
             raise ConfigError(f"{o.name} and {seen_tags[key]} use tag {o.tag_id} on the same "
                               "camera; give them different tags")

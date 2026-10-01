@@ -2,6 +2,25 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.4.1
+
+- Print tag: SVG export sized in millimetres, with separate non-overlapping
+  `black` and `white` shapes for cutters and two-colour 3D printing.
+- Print tag: the white quiet-zone border is optional (PNG and SVG), for tags
+  placed on a light surface.
+- Fallback is now set per object in the panel ("if this camera fails, try the
+  other source"). The global `fallback_source` option is removed.
+- Phantom protection, from the first day of real logs (phantom reads in
+  gravel were 8-20 px with aspect 2.2-4, against a 50 px, 1.5-aspect tag):
+  - new `min_size_ratio` (default 0.5): reads of the object's own tag smaller
+    than half its learned usual size are rejected
+  - `max_aspect` default lowered from 3.0 to 2.0
+  - `present_min_hits` default raised from 1 to 2, so one stray read cannot
+    flip the state
+  - rejected reads say why (aspect or size) in the log, Warning sensor and
+    panel history.
+- Panel polish: print card with preview, diagnostics label wrapping.
+
 ## 0.4.0
 
 - **TagSense panel** in the HA sidebar (ingress):

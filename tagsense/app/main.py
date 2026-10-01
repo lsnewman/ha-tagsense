@@ -25,11 +25,11 @@ WEB_PORT = int(os.environ.get("TAGSENSE_WEB_PORT", "8099"))
 DEFAULT_OPTIONS = {
     "objects": [],
     "go2rtc_url": "",
-    "fallback_source": "none",
-    "max_aspect": 3.0,
+    "max_aspect": 2.0,
+    "min_size_ratio": 0.5,
     "burst_size": 5,
     "burst_interval_s": 1.0,
-    "present_min_hits": 1,
+    "present_min_hits": 2,
     "absent_checks": 3,
     "confirm_delay_s": 45,
     "unknown_after_failures": 2,
@@ -49,23 +49,8 @@ def load_options() -> dict:
     return opts
 
 
-def camera_key(oc: ObjectConfig, fallback: str) -> tuple:
-    """Objects sharing a key share one worker (one fetch per burst)."""
-    key = oc.camera_key
-    if fallback not in ("none", oc.source):
-        key += (oc.camera_entity if fallback == "ha_camera" else oc.go2rtc_stream,)
-    return key
-
-
 def make_source(oc: ObjectConfig, opts: dict):
-    fallback = opts.get("fallback_source", "none")
-    if fallback not in ("none", oc.source):
-        needed = oc.camera_entity if fallback == "ha_camera" else oc.go2rtc_stream
-        if not needed:
-            log.warning("[%s] fallback_source %s needs %s on this object; no fallback",
-                        oc.id, fallback, "camera_entity" if fallback == "ha_camera" else "go2rtc_stream")
-            fallback = "none"
-    return build_source({"source": oc.source, "fallback_source": fallback,
+    return build_source({"source": oc.source, "fallback_source": oc.fallback_source or "none",
                          "go2rtc_url": opts.get("go2rtc_url", ""),
                          "go2rtc_stream": oc.go2rtc_stream, "camera_entity": oc.camera_entity})
 
@@ -86,7 +71,8 @@ class App:
             max_aspect=float(opts["max_aspect"]),
             confirm_delay_s=float(opts["confirm_delay_s"]),
             sanity_min_ratio=float(opts["sanity_min_ratio"]),
-            sanity_min_h=float(opts["sanity_min_h"]))
+            sanity_min_h=float(opts["sanity_min_h"]),
+            min_size_ratio=float(opts["min_size_ratio"]))
         self.mqtt = mqtt or MqttClient(supervisor_mqtt_config(opts), VERSION,
                                        on_connected=self._on_connected,
                                        on_setting=self._on_setting,
@@ -105,11 +91,12 @@ class App:
         self.gen_stop = threading.Event()
         cameras: dict[tuple, CameraWorker] = {}
         objects: dict[str, TrackedObject] = {}
-        fallback = self.opts.get("fallback_source", "none")
         for oc in configs:
-            key = camera_key(oc, fallback)
+            key = oc.camera_key
             if key not in cameras:
                 name = oc.go2rtc_stream if oc.source == "go2rtc" else oc.camera_entity
+                if oc.fallback:
+                    name += "+fallback"
                 cameras[key] = CameraWorker(
                     name, self.source_factory(oc, self.opts), threading.Condition(),
                     int(self.opts["burst_size"]), float(self.opts["burst_interval_s"]),

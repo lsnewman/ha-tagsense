@@ -46,7 +46,7 @@ def two_tag_jpeg():
 
 
 def setup(tmp_path):
-    tuning = Tuning(dec.Config(), 3.0, 45.0, 0.5, 0.02)
+    tuning = Tuning(dec.Config(present_min_hits=1), 2.0, 45.0, 0.5, 0.02, 0.5)
     client = FakeClient()
     src = CountingSource(two_tag_jpeg())
     cam = CameraWorker("cam", src, threading.Condition(), 3, 0.0, threading.Event())
@@ -127,3 +127,34 @@ def test_other_objects_tags_are_not_phantoms(tmp_path):
     objs["recycling"].on_check_now()
     run_once(cam)
     assert client.last("tagsense/recycling/diag/phantom_decodes") == "3"
+
+
+def trained_bin(tmp_path, usual_size_frac):
+    cam, src, client, objs = setup(tmp_path)
+    ref = objs["bin"].reference
+    ref.hits, ref.size, ref.cx, ref.cy = 10, usual_size_frac, 0.94, 0.68
+    return cam, client, objs
+
+
+def test_size_gate_rejects_tiny_target_decode(tmp_path):
+    # synthetic tag is ~50px in a 1080p frame (4.6%); pretend the usual size is 4x that
+    cam, client, objs = trained_bin(tmp_path, 0.185)
+    objs["bin"].on_check_now()
+    run_once(cam)
+    attrs = client.last("tagsense/bin/status/attributes")
+    assert '"hits": 0' in attrs and '"outcome": "miss"' in attrs
+    assert "size 24% of usual < 50%" in client.last("tagsense/bin/diag/warning")
+    assert client.last("tagsense/bin/diag/phantom_decodes") == "3"
+    assert objs["bin"].reference.hits == 10          # rejected reads are not learned
+
+
+def test_size_gate_passes_normal_size_and_waits_for_learning(tmp_path):
+    cam, client, objs = trained_bin(tmp_path, 0.05)      # usual ~ actual
+    objs["bin"].on_check_now()
+    run_once(cam)
+    assert '"hits": 3' in client.last("tagsense/bin/status/attributes")
+    cam, client, objs = trained_bin(tmp_path / "b", 0.185)
+    objs["bin"].reference.hits = 9                       # not ready yet: no size gate
+    objs["bin"].on_check_now()
+    run_once(cam)
+    assert '"hits": 3' in client.last("tagsense/bin/status/attributes")

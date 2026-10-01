@@ -29,7 +29,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 a { color: var(--accent); text-decoration: none; }
 button, .btn { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
   padding: 6px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
-button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.btn.primary, button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 button.danger { color: var(--bad); }
 button:disabled { opacity: .5; cursor: default; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
@@ -56,7 +56,7 @@ table { table-layout: fixed; }
 table { width: 100%; border-collapse: collapse; }
 td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-weight: 600; color: var(--muted); font-size: 12px; }
-.kv td:first-child { color: var(--muted); white-space: nowrap; width: 40%; }
+.kv td:first-child { color: var(--muted); width: 45%; }
 label { display: block; margin: 10px 0 4px; font-weight: 600; }
 input, select { font: inherit; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--bg); color: var(--text); }
@@ -182,7 +182,6 @@ function detail(id, isRefresh) {
       <span id="d-chip"></span>
       <button class="primary" id="d-check" onclick="checkNow('${id}', this)">Check now</button>
       <a class="btn" href="#/edit/${id}">Edit</a>
-      <a class="btn" href="api/tag/${o.tag_id}.png" target="_blank" title="Print at a size where the black square is as large as the object allows">Print tag ${o.tag_id}</a>
     </div>
     <div class="muted small" id="d-sub"></div></div>
 
@@ -231,10 +230,31 @@ function detail(id, isRefresh) {
         <div class="card" id="d-phantom-card" style="display:none"><h3>Last phantom read</h3><div id="d-phantom"></div></div>
       </div>
     </div>
+    <div class="card" id="print-card"><h3>Print tag ${o.tag_id}</h3>
+      <div class="cols" style="grid-template-columns:minmax(0,1fr) 160px;align-items:start">
+        <div>
+          <div class="row">
+            <label class="inline"><input type="radio" name="p-fmt" value="png" checked> PNG (paper)</label>
+            <label class="inline"><input type="radio" name="p-fmt" value="svg"> SVG (vector, mm)</label>
+          </div>
+          <label class="inline" style="margin-top:10px"><input type="checkbox" id="p-quiet" checked> White border (quiet zone)</label>
+          <div class="hint">The detector needs a light area around the black square, about one cell wide.
+            Leave the border off only if the tag will sit on a light surface, such as a white lid.</div>
+          <div id="p-size-row"><label for="p-size">Black square size (mm)</label>
+            <input id="p-size" type="number" min="5" max="1000" step="1" value="100" style="max-width:140px">
+            <div class="hint">Bigger is better: make it as large as the object allows.
+              The SVG has separate <i>black</i> and <i>white</i> shapes, ready for a cutter or a two-colour 3D print.</div></div>
+          <div class="row" style="margin-top:12px"><a class="btn primary" id="p-download" target="_blank">Download</a>
+            <span class="muted small" id="p-desc"></span></div>
+        </div>
+        <img id="p-preview" alt="" style="width:160px;border:1px solid var(--line);border-radius:6px;background:#fff">
+      </div></div>
+
     <div class="card"><div class="row"><span class="muted small" style="flex:1">Deleting removes this object, its entities and its saved state.</span>
       <button class="danger" onclick="deleteObject('${id}')">Delete ${esc(o.name)}</button></div></div>
   </div>`;
   initEditor(o);
+  initPrint(o);
   updateDetail(o);
   loadFrame(false);
 }
@@ -243,7 +263,7 @@ let lastHistoryKey = "";
 async function updateDetail(o) {
   document.getElementById("d-chip").innerHTML = chip(o.state, o.reason);
   document.getElementById("d-sub").textContent =
-    `tag ${o.tag_id} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
+    `tag ${o.tag_id} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity}${o.fallback ? " (fallback " + (o.source === "go2rtc" ? o.camera_entity : "go2rtc " + o.go2rtc_stream) + ")" : ""} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
   document.getElementById("d-check").disabled = !o.settings.enabled;
   const d = o.diag || {};
   document.getElementById("d-last").innerHTML = (o.has_image
@@ -393,6 +413,25 @@ async function saveCrop() {
   } catch (e) { err.textContent = e.message; btn.disabled = false; }
 }
 
+// ---------- print tag -----------------------------------------------------
+function initPrint(o) {
+  const upd = () => {
+    const fmt = document.querySelector("input[name=p-fmt]:checked").value;
+    const quiet = document.getElementById("p-quiet").checked ? 1 : 0;
+    const size = Math.max(5, Math.min(1000, +document.getElementById("p-size").value || 100));
+    document.getElementById("p-size-row").style.display = fmt === "svg" ? "" : "none";
+    const url = fmt === "svg" ? `api/tag/${o.tag_id}.svg?size_mm=${size}&quiet=${quiet}`
+                              : `api/tag/${o.tag_id}.png?quiet=${quiet}`;
+    document.getElementById("p-download").href = url;
+    document.getElementById("p-preview").src = `api/tag/${o.tag_id}.png?cell=20&quiet=${quiet}&label=0`;
+    document.getElementById("p-desc").textContent = fmt === "svg"
+      ? `${quiet ? Math.round(size * 8 / 6) : size} mm square overall`
+      : "print at the largest size that fits";
+  };
+  document.querySelectorAll("input[name=p-fmt], #p-quiet, #p-size").forEach(el => el.addEventListener("input", upd));
+  upd();
+}
+
 // ---------- add / edit form -----------------------------------------------
 async function objectForm(id) {
   const o = id ? objById(id) : null;
@@ -423,15 +462,24 @@ async function objectForm(id) {
         <datalist id="streams"></datalist>
         <div class="hint">Pick the highest-resolution stream that connects straight to the camera.</div></div>
       <div id="f-ha"><label for="f-entity">Camera entity</label>
-        <select id="f-entity"><option value="">loading cameras…</option></select>
-        <div class="hint">Also used as the fallback when fallback_source is ha_camera.</div></div>
+        <select id="f-entity"><option value="">loading cameras…</option></select></div>
+      <label class="inline" style="margin-top:12px"><input type="checkbox" id="f-fallback" ${v.fallback ? "checked" : ""}>
+        Fallback: if this camera fails, try the other source</label>
+      <div class="hint" id="f-fallback-hint"></div>
       <div class="error" id="f-error"></div>
       <div class="row" style="margin-top:14px"><button class="primary" type="submit">${o ? "Save" : "Add"}</button>
         <a class="btn" href="${o ? "#/obj/" + o.id : "#/"}">Cancel</a></div>
     </form></div>`;
   const srcSel = () => document.querySelector("input[name=src]:checked").value;
-  const toggle = () => { document.getElementById("f-go2rtc").style.display = srcSel() === "go2rtc" ? "" : "none"; };
-  document.querySelectorAll("input[name=src]").forEach(r => r.addEventListener("change", toggle));
+  const toggle = () => {
+    const src = srcSel(), fb = document.getElementById("f-fallback").checked;
+    document.getElementById("f-go2rtc").style.display = src === "go2rtc" || fb ? "" : "none";
+    document.getElementById("f-ha").style.display = src === "ha_camera" || fb ? "" : "none";
+    document.getElementById("f-fallback-hint").textContent = src === "go2rtc"
+      ? "Uses the Home Assistant camera above when a go2rtc fetch fails (it is often lower resolution)."
+      : "Uses the go2rtc stream above when the Home Assistant camera fails.";
+  };
+  document.querySelectorAll("input[name=src], #f-fallback").forEach(r => r.addEventListener("change", toggle));
   toggle();
   document.getElementById("f-tag").addEventListener("change", e =>
     document.getElementById("f-print").href = `api/tag/${e.target.value}.png`);
@@ -451,7 +499,8 @@ async function objectForm(id) {
     const body = { name: document.getElementById("f-name").value.trim(),
       tag_id: +document.getElementById("f-tag").value, source: srcSel(),
       go2rtc_stream: document.getElementById("f-stream").value.trim(),
-      camera_entity: document.getElementById("f-entity").value };
+      camera_entity: document.getElementById("f-entity").value,
+      fallback: document.getElementById("f-fallback").checked };
     if (!o) body.id = document.getElementById("f-id").value.trim();
     const btn = e.target.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Saving…";
