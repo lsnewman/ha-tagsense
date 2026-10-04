@@ -2,6 +2,32 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.4.3
+
+- **Rotation sensor** (requested on Reddit: the bin men turn the bin round).
+  A new *Rotation* sensor reports how far the tag is turned from its 0°
+  position, in degrees, stepped by a new per-object **Rotation steps** setting
+  (1-36, default 4: 0/90/180/270°; 8 = 45° steps; 1 = always 0). The exact
+  angle is the `angle` attribute. The turn is measured on the tag's own
+  surface rather than in the image, so perspective does not distort it (a
+  90° turn measured within 1° on real frames). All accepted reads in a check
+  are averaged, and the value only moves to a new step once it is 5° past
+  the halfway point, so it does not flicker.
+- **Set current orientation as 0°**: a button in the panel and on the HA
+  device. Until it is pressed, 0° is taken from the first sighting. *Reset
+  learned position* also forgets it.
+- The rotation entities are unavailable while the object is not present.
+  There is no built-in "turned" sensor: build one with a template, e.g.
+  rotation is 180 (see the docs).
+- Panel: arrows on the tag in the search-area editor (its top now, and at
+  0°), a Rotation row in *Last check*, the steps setting and the set-as-0°
+  button in *Settings*, a Rotation column in *Recent checks*, a Rotation
+  track on the 24-hour chart, and a *State changes* snapshot whenever the
+  stepped rotation changes.
+- The tag must stay visible in every orientation you want to tell apart, so
+  it belongs on the lid. A tag on one side cannot see a 180° turn; that would
+  need a second tag (another object) on the opposite side.
+
 ## 0.4.2
 
 - **Rejection alert.** When the object's tag is read but every read is

@@ -7,6 +7,7 @@ import pytest
 
 from app.analysis import analyse
 from app.detector import DEFAULT_CROP, Detector
+from app.rotation import SQ, circ_dist, lid_angle
 from app.sanity import check_image
 
 EXTS = {".jpg", ".jpeg", ".png"}
@@ -49,3 +50,29 @@ def test_night_proxy_passes_sanity(testdata, gain):
         img = cv2.GaussianBlur(img, (5, 5), 1.5) + rng.normal(0, 1.0, img.shape)
         c = check_image(np.clip(img, 0, 255).astype(np.uint8), DEFAULT_CROP)
         assert c.ok, (p.name, gain, c.reason, c.ratio)
+
+
+def turned(frame, corners, deg, scale=1.6):
+    """The frame with the tag turned `deg` clockwise on its own plane, in place.
+    The patch is pasted inside the quad scaled 1.6x, so the quiet zone survives."""
+    H = cv2.getPerspectiveTransform(corners.astype(np.float32), SQ * 100 + 50)
+    R = np.vstack([cv2.getRotationMatrix2D((50, 50), -deg, 1.0), [0, 0, 1]])
+    warped = cv2.warpPerspective(frame, np.linalg.inv(H) @ R @ H, frame.shape[1::-1])
+    c = corners.mean(axis=0)
+    mask = np.zeros(frame.shape[:2], np.uint8)
+    cv2.fillPoly(mask, [((corners - c) * scale + c).astype(np.int32)], 255)
+    out = frame.copy()
+    out[mask > 0] = warped[mask > 0]
+    return out
+
+
+@pytest.mark.parametrize("deg", [90, 180, 270])
+def test_rotation_on_real_frames(testdata, deg):
+    fs = frames(testdata, "present")
+    assert fs
+    for p in fs:
+        frame = cv2.imread(str(p))
+        ref = DET.detect(frame, DEFAULT_CROP).corners
+        det = DET.detect(turned(frame, ref, deg), DEFAULT_CROP)
+        assert det.found, p.name
+        assert circ_dist(lid_angle(ref, det.corners), deg) < 2, p.name

@@ -49,7 +49,7 @@ def test_expected_components_and_attribute_topics():
     comps = {t.split("/")[1] for t in cfgs}
     assert comps == {"binary_sensor", "sensor", "button", "switch", "number", "image"}
     numbers = [p for t, p in cfgs.items() if t.split("/")[1] == "number"]
-    assert len(numbers) == 5 and all(p["retain"] is True for p in numbers)
+    assert len(numbers) == 6 and all(p["retain"] is True for p in numbers)
     warn = cfgs["homeassistant/sensor/tagsense_bin/warning/config"]
     assert warn["json_attributes_topic"] == "tagsense/bin/diag/reference/attributes"
     assert all("_attrs" not in p for p in cfgs.values())
@@ -66,7 +66,9 @@ def test_remove_clears_discovery_and_retained_topics():
     m.ObjectPublisher(c, "bin", "Bin").remove()
     cleared = {t for t, p in c.msgs if p == b""}
     assert {t for t, _ in m.discovery_configs("1", "bin", "Bin")} <= cleared
-    assert {"tagsense/bin/presence", "tagsense/bin/set/crop_x1", "tagsense/bin/setting/enabled"} <= cleared
+    assert {"tagsense/bin/presence", "tagsense/bin/set/crop_x1", "tagsense/bin/setting/enabled",
+            "tagsense/bin/rotation", "tagsense/bin/rotation/available", "tagsense/bin/set/rotation_steps",
+            "tagsense/bin/cmd/set_orientation"} <= cleared
     assert all(t.startswith(("tagsense/bin/", "homeassistant/")) for t in cleared)
 
 
@@ -125,6 +127,39 @@ def test_commands_routed():
         def __init__(self, topic, payload=b"PRESS"):
             self.topic, self.payload = topic, payload
 
-    for t in ("tagsense/bin/cmd/check_now", "tagsense/bin/cmd/reset_reference", "tagsense/bin/cmd/nope"):
+    for t in ("tagsense/bin/cmd/check_now", "tagsense/bin/cmd/reset_reference",
+              "tagsense/bin/cmd/set_orientation", "tagsense/bin/cmd/nope"):
         client._handle_message(None, None, Msg(t))
-    assert calls == [("bin", "check_now"), ("bin", "reset_reference")]
+    client._handle_message(None, None, Msg("tagsense/bin/set/rotation_steps", b"8"))
+    assert calls == [("bin", "check_now"), ("bin", "reset_reference"), ("bin", "set_orientation"),
+                     ("bin", "rotation_steps", "8")]
+
+
+def test_rotation_entities_follow_presence():
+    cfgs = configs()
+    sensor = cfgs["homeassistant/sensor/tagsense_bin/rotation/config"]
+    assert sensor["unit_of_measurement"] == "°" and sensor["state_class"] == "measurement"
+    assert sensor["json_attributes_topic"] == "tagsense/bin/rotation/attributes"
+    for key in ("sensor/tagsense_bin/rotation", "number/tagsense_bin/rotation_steps",
+                "button/tagsense_bin/set_orientation"):
+        p = cfgs[f"homeassistant/{key}/config"]
+        assert p["availability_mode"] == "all"
+        assert {a["topic"] for a in p["availability"]} == {m.AVAILABILITY, "tagsense/bin/rotation/available"}
+    steps = cfgs["homeassistant/number/tagsense_bin/rotation_steps/config"]
+    assert (steps["min"], steps["max"], steps["step"], steps["entity_category"]) == (1, 36, 1, "config")
+    c = _Client()
+    pub = m.ObjectPublisher(c, "bin", "Bin")
+    pub.publish_rotation(False, 180, 178.6, 4)
+    assert c.msgs == [("tagsense/bin/rotation/available", "offline")]  # value kept, not overwritten
+    pub.publish_rotation(True, 180, 178.6, 4)
+    assert c.msgs[1:] == [("tagsense/bin/rotation/attributes", '{"angle": 178.6, "steps": 4}'),
+                          ("tagsense/bin/rotation", "180"), ("tagsense/bin/rotation/available", "online")]
+
+
+def test_rotation_steps_setting():
+    s = Settings()
+    assert s.rotation_steps == 4
+    assert s.set("rotation_steps", "8") and s.rotation_steps == 8
+    assert s.set("rotation_steps", "0") and s.rotation_steps == 1
+    assert s.set("rotation_steps", "1000") and s.rotation_steps == 36
+    assert not s.set("rotation_steps", "inf") and not s.set("rotation_steps", "x")

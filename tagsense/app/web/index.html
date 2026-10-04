@@ -279,6 +279,7 @@ function detail(id, isRefresh) {
           <span><i style="background:var(--crop)"></i>search area</span>
           <span><i style="background:var(--quad)"></i>last detection</span>
           <span><i style="background:var(--usual)"></i>usual position (learned)</span>
+          <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>
           <span id="crop-values"></span></div>
         <div class="error" id="crop-error"></div>
       </div>
@@ -292,6 +293,12 @@ function detail(id, isRefresh) {
           <input id="s-poll" type="number" min="0" max="86400" value="${s.poll_interval}"
             onchange="saveSetting('poll_interval', this.value)">
           <div class="hint">0 = only when Check now is pressed. Otherwise at least 10.</div>
+          <label for="s-steps">Rotation steps</label>
+          <input id="s-steps" type="number" min="1" max="36" value="${s.rotation_steps}"
+            onchange="saveSetting('rotation_steps', this.value)">
+          <div class="hint">4 = 0/90/180/270°, 8 = 45° steps, 1 = always 0 (off).
+            The tag must stay visible in every orientation, e.g. on the lid.</div>
+          <div class="row" style="margin-top:8px"><button id="s-zero" onclick="setOrientation('${id}')">Set current orientation as 0°</button></div>
           <div class="error" id="s-error"></div></div>
       </div>
     </div>
@@ -356,6 +363,7 @@ async function updateDetail(o) {
       <tr><td>Warning</td><td>${esc(d.warning || "none")}</td></tr>
       <tr><td>Tag size</td><td>${fmtNum(d.tag_size_px)} px</td></tr>
       <tr><td>Tag aspect</td><td>${fmtNum(d.tag_aspect, 2)} <span class="muted">(limit ${state.max_aspect ? state.max_aspect : "off"})</span></td></tr>
+      <tr><td>Rotation</td><td>${rotText(o)}</td></tr>
       <tr><td>Miss streak</td><td>${o.miss_streak}</td></tr></table>`;
   document.getElementById("d-diag").innerHTML = `<table class="kv">
     <tr><td>Source</td><td>${esc(d.last_source || "–")} ${esc(d.resolution || "")}</td></tr>
@@ -376,14 +384,19 @@ async function updateDetail(o) {
   if (!editorDirty) { setCrop(savedCrop(), true); drawOverlay(o); }
   const s = o.settings, el = document.getElementById("s-enabled"), poll = document.getElementById("s-poll");
   if (document.activeElement !== poll) poll.value = s.poll_interval;
+  const steps = document.getElementById("s-steps");
+  if (document.activeElement !== steps) steps.value = s.rotation_steps;
+  const zero = document.getElementById("s-zero");
+  zero.disabled = o.state !== "present" || !o.last_corners;
+  zero.title = zero.disabled ? "Only while the object is present" : "Make the tag's current turn the 0° position";
   el.checked = s.enabled;
   if (lastHistoryKey !== o.last_check) {
     lastHistoryKey = o.last_check;
     try {
       const hist = await api(`objects/${o.id}/history`);
-      document.getElementById("d-history").innerHTML = hist.length ? `<table><tr><th>When</th><th>Trigger</th><th>Result</th><th>Hits</th><th>Aspect</th><th>Reported</th></tr>
+      document.getElementById("d-history").innerHTML = hist.length ? `<table><tr><th>When</th><th>Trigger</th><th>Result</th><th>Hits</th><th>Aspect</th><th>Rot.</th><th>Reported</th></tr>
         ${hist.map(h => `<tr><td title="${esc(h.at)}">${ago(h.at)}</td><td>${esc(h.trigger)}</td><td>${esc(h.outcome)}</td>
-          <td>${h.hits}/${h.valid}/${h.frames}</td><td>${h.aspect ? h.aspect.toFixed(2) : "–"}</td><td>${esc(h.reported)} <span class="muted">${esc(h.reason)}</span>
+          <td>${h.hits}/${h.valid}/${h.frames}</td><td>${h.aspect ? h.aspect.toFixed(2) : "–"}</td><td title="${h.angle ?? ""}">${h.rotation ?? "–"}${h.rotation != null ? "°" : ""}</td><td>${esc(h.reported)} <span class="muted">${esc(h.reason)}</span>
           ${h.warning ? `<div style="color:var(--warn)">${esc(h.warning)}</div>` : ""}
           ${h.phantoms.length ? `<div class="muted">${h.phantoms.map(esc).join("<br>")}</div>` : ""}</td></tr>`).join("")}</table>
         <div class="hint">Hits = frames with the tag / usable frames / frames fetched. When the object is already present,
@@ -395,10 +408,24 @@ async function updateDetail(o) {
   }
 }
 
+function rotText(o) {
+  const r = o.rotation || {};
+  if (r.value === null || r.value === undefined) return `– <span class="muted">(${o.state === "present" ? "no hit yet" : "not present"})</span>`;
+  return `${r.value}° <span class="muted">(exact ${r.angle.toFixed(1)}°${o.state === "present" ? "" : ", last seen"})</span>`;
+}
+
+async function setOrientation(id) {
+  const o = objById(id);
+  if (!confirm(`Make the way ${o ? o.name : id}'s tag is turned now the 0° position?`)) return;
+  try { await api(`objects/${id}/set_orientation`, { method: "POST" }); refresh(); }
+  catch (e) { alert(e.message); }
+}
+
 async function resetReference(id) {
   const o = objById(id);
   if (!confirm(`Reset the learned position of ${o ? o.name : id}?\n\nUse this after moving the object, e.g. further from the camera. ` +
-               `The size gate and position warnings stay off until ${o ? o.reference.min_hits : 10} new hits have been learned.`)) return;
+               `The size gate and position warnings stay off until ${o ? o.reference.min_hits : 10} new hits have been learned. ` +
+               `The 0° rotation is also forgotten and set again from the next hit.`)) return;
   try { await api(`objects/${id}/reset_reference`, { method: "POST" }); refresh(); }
   catch (e) { alert(e.message); }
 }
@@ -432,7 +459,9 @@ const currentId = () => (location.hash.match(/^#\/obj\/([a-z0-9_]+)$/) || [])[1]
 // Small multiples on one time axis (never two y-scales), in 10-minute buckets:
 // hit rate (frames with the tag / frames fetched; early-exit checks fetch fewer
 // frames, so raw hit counts would mislead), crop contrast, the worst tag aspect
-// against max_aspect, and the reported state.
+// against max_aspect, the tag rotation (horizontal runs at each stepped value,
+// no connecting lines: 270 -> 0 is a 90 deg turn, not a 270 deg jump) and the
+// reported state.
 const STATE_COLOR = { present: "var(--ok)", absent: "var(--muted)", unknown: "var(--warn)" };
 const BUCKET_S = 600;
 let chartPts = [];
@@ -442,10 +471,11 @@ function bucketise(pts, t0) {
     const i = Math.floor((p.t - t0) / BUCKET_S);
     if (i < 0 || i >= n) continue;
     const b = out[i] || (out[i] = { t: t0 + (i + 0.5) * BUCKET_S, i, checks: 0, hits: 0, frames: 0, cSum: 0, cN: 0,
-                                     aspect: null, states: {}, outcomes: {} });
+                                     aspect: null, rotation: null, states: {}, outcomes: {} });
     b.checks++; b.hits += p.hits; b.frames += p.frames || 0;
     if (p.contrast !== null && p.contrast !== undefined) { b.cSum += p.contrast; b.cN++; }
     if (p.aspect) b.aspect = Math.max(b.aspect || 0, p.aspect);
+    if (p.rotation !== null && p.rotation !== undefined) b.rotation = p.rotation;    // the latest
     b.states[p.reported] = (b.states[p.reported] || 0) + 1;
     b.outcomes[p.outcome] = (b.outcomes[p.outcome] || 0) + 1;
   }
@@ -476,6 +506,10 @@ function drawChart(pts) {
     { key: "aspect", title: "Tag aspect, worst per 10 min" + (lim ? ` (orange line: limit ${lim})` : ""), h: 48, min: 1,
       max: maxA, ticks: [1, +maxA.toFixed(1)], limit: lim },
   ];
+  const hasRot = buckets.some(b => b && b.rotation !== null);
+  const maxR = Math.max(270, ...buckets.map(b => b && b.rotation || 0));
+  if (hasRot) panels.push({ key: "rotation", title: "Rotation, degrees (latest per 10 min)", h: 64, max: maxR,
+                            ticks: [0, 90, 180, 270], runs: true });
   const f = n => n.toFixed(1);
   const segments = key => {                 // runs of buckets with a value
     const segs = [];
@@ -496,6 +530,20 @@ function drawChart(pts) {
     for (const tk of pn.ticks) out += `<line class="grid-line" x1="${L}" x2="${W - R}" y1="${yOf(tk)}" y2="${yOf(tk)}"/>
       <text x="${L - 6}" y="${yOf(tk) + 4}" text-anchor="end">${tk}</text>`;
     if (pn.limit) out += `<line class="limit" x1="${L}" x2="${W - R}" y1="${yOf(pn.limit)}" y2="${yOf(pn.limit)}"/>`;
+    if (pn.runs) {                          // runs of equal values, no connectors
+      let run = null;
+      const flush = () => { if (run) out += `<path class="series" d="M${f(run.x0)} ${f(yOf(run.v))}H${f(run.x1)}"/>`; run = null; };
+      buckets.forEach(b => {
+        const v = b && b[pn.key];
+        if (v === null || v === undefined) return flush();
+        const x0 = x(b.t) - bw / 2 + 1, x1 = x(b.t) + bw / 2 - 1;
+        if (run && run.v === v && run.i === b.i - 1) { run.x1 = x1; run.i = b.i; }
+        else { flush(); run = { v, x0, x1: Math.max(x1, x0 + 3), i: b.i }; }
+      });
+      flush();
+      y += pn.h + 8;
+      continue;
+    }
     for (const seg of segments(pn.key)) {
       if (seg.length === 1) seg.push([seg[0][0] + bw * 0.6, seg[0][1]]);   // lone bucket: a short dash
       const d = seg.map(([px, v], i) => `${i ? "L" : "M"}${f(px)} ${f(yOf(v))}`).join("");
@@ -527,7 +575,7 @@ function drawChart(pts) {
     tip.innerHTML = `<b>${hm(b.t - BUCKET_S / 2)}–${hm(b.t + BUCKET_S / 2)}</b> · ${b.checks} check${b.checks === 1 ? "" : "s"}<br>
       ${Object.entries(b.states).map(([k, n]) => `${esc(k)} ${n}`).join(", ")}
       (${Object.entries(b.outcomes).map(([k, n]) => `${esc(k)} ${n}`).join(", ")})<br>
-      hit rate ${fmtNum(b.rate, 0)} % · contrast ${fmtNum(b.contrast)} · worst aspect ${fmtNum(b.aspect, 2)}`;
+      hit rate ${fmtNum(b.rate, 0)} % · contrast ${fmtNum(b.contrast)} · worst aspect ${fmtNum(b.aspect, 2)}${b.rotation !== null ? ` · rotation ${b.rotation}°` : ""}`;
     tip.style.display = "block";
     const left = bx * r.width / W;
     tip.style.left = Math.min(Math.max(0, left + 12), r.width - tip.offsetWidth) + "px";
@@ -578,7 +626,35 @@ function drawOverlay(o) {
   if (c) out += `<g stroke="var(--usual)" style="stroke-width:2px" vector-effect="non-scaling-stroke">
       <line x1="${c[0] - 0.02}" y1="${c[1]}" x2="${c[0] + 0.02}" y2="${c[1]}" vector-effect="non-scaling-stroke"/>
       <line x1="${c[0]}" y1="${c[1] - 0.035}" x2="${c[0]}" y2="${c[1] + 0.035}" vector-effect="non-scaling-stroke"/></g>`;
+  const zero = o.rotation && o.rotation.zero_corners;     // on top of the crosshair
+  if (zero) out += tagArrow(zero, "var(--usual)", true);
+  if (o.last_corners) out += tagArrow(o.last_corners, "var(--quad)", false);
   svg.innerHTML = out;
+}
+
+// Arrow from the tag centre through the middle of its top edge (corners 0-1: the
+// tag's own top). Drawn in square pixel space so the head is not stretched by
+// the 0-1 overlay's non-uniform scaling.
+function tagArrow(corners, color, dashed) {
+  const img = document.getElementById("frame");
+  const k = img && img.naturalWidth ? img.naturalHeight / img.naturalWidth : 9 / 16;
+  const P = corners.map(([x, y]) => [x, y * k]);
+  const cx = P.reduce((a, p) => a + p[0], 0) / 4, cy = P.reduce((a, p) => a + p[1], 0) / 4;
+  const mx = (P[0][0] + P[1][0]) / 2, my = (P[0][1] + P[1][1]) / 2;
+  let dx = mx - cx, dy = my - cy;
+  const len = Math.hypot(dx, dy);
+  if (!len) return "";
+  dx /= len; dy /= len;
+  const L = Math.max(len * 1.9, 0.045), hs = Math.max(len * 0.55, 0.012);   // past the crosshair
+  const tx = cx + dx * L, ty = cy + dy * L;
+  const back = [tx - dx * hs, ty - dy * hs];
+  const pts = [[tx, ty], [back[0] - dy * hs * 0.55, back[1] + dx * hs * 0.55],
+               [back[0] + dy * hs * 0.55, back[1] - dx * hs * 0.55]];
+  const u = ([x, y]) => `${x.toFixed(5)},${(y / k).toFixed(5)}`;
+  return `<g stroke="${color}" fill="${color}">
+    <line x1="${cx}" y1="${cy / k}" x2="${back[0]}" y2="${back[1] / k}" vector-effect="non-scaling-stroke"
+      style="stroke-width:2px" ${dashed ? 'stroke-dasharray="4 3"' : ""}/>
+    <polygon points="${pts.map(u).join(" ")}" ${dashed ? 'fill-opacity="0.35"' : ""} stroke="none"/></g>`;
 }
 
 function loadFrame(fresh) {
@@ -587,7 +663,8 @@ function loadFrame(fresh) {
   loading.style.display = ""; loading.textContent = "Fetching a frame…";
   const next = new Image();
   next.onload = () => { img.src = next.src; img.style.display = ""; loading.style.display = "none";
-    document.getElementById("crop").style.display = ""; };
+    document.getElementById("crop").style.display = "";
+    const o = objById(id); if (o) drawOverlay(o); };
   next.onerror = () => { loading.textContent = "Could not fetch a frame from the camera. Check the app log."; };
   next.src = `api/objects/${id}/frame.jpg?max_age=${fresh ? 0 : 120}&t=${Date.now()}`;
 }

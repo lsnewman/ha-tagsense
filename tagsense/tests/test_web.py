@@ -159,8 +159,10 @@ def test_import_errors_change_nothing(app):
 
 def test_settings_and_check(app):
     api = Api(app)
-    s = api.settings("bin", {"crop_x1": 0.1, "poll_interval": 5, "enabled": False})
-    assert s["crop_x1"] == 0.1 and s["poll_interval"] == 10 and s["enabled"] is False
+    s = api.settings("bin", {"crop_x1": 0.1, "poll_interval": 5, "rotation_steps": 99})
+    assert s["crop_x1"] == 0.1 and s["poll_interval"] == 10 and s["rotation_steps"] == 36
+    s = api.settings("bin", {"enabled": False})
+    assert s["enabled"] is False
     with pytest.raises(ApiError, match="disabled"):
         api.check("bin")
     with pytest.raises(ApiError, match="unknown setting"):
@@ -209,10 +211,17 @@ def test_http_layer(app):
         status, _, body = http(server, "GET", "/api/objects/bin/chart")
         assert status == 200 and json.loads(body)[0]["reported"] == "present"
         assert http(server, "POST", "/api/objects/bin/reset_reference")[0] == 200
+        status, _, body = http(server, "POST", "/api/objects/bin/set_orientation")
+        assert status == 200
+        rot = json.loads(http(server, "GET", "/api/state")[2])["objects"][0]["rotation"]
+        assert rot["value"] == 0 and rot["zero_set"] and len(rot["zero_corners"]) == 4
         status, _, body = http(server, "GET", "/api/export")
         assert json.loads(body)["objects"][0]["id"] == "bin"
         status, _, body = http(server, "POST", "/api/import", {"text": body.decode()})
         assert status == 200 and json.loads(body)["updated"] == ["bin"]
+        with app.objects["bin"].cond:
+            app.objects["bin"].decision.state = "absent"
+        assert http(server, "POST", "/api/objects/bin/set_orientation")[0] == 409
     finally:
         server.shutdown()
 

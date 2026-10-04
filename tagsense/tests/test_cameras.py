@@ -226,3 +226,69 @@ def test_snapshot_on_state_change_and_chart(tmp_path):
     pts = objs["bin"].chart_points()
     assert len(pts) == 2 and pts[-1]["hits"] == 3 and pts[-1]["reported"] == "present"
     assert pts[-1]["aspect"] is not None and pts[-1]["contrast"] is not None
+
+
+def jpeg(rot90=0):
+    return cv2.imencode(".jpg", synthetic_frame(50, rot90=rot90)[0])[1].tobytes()
+
+
+def test_rotation_zero_from_first_hit_then_turn(tmp_path):
+    cam, src, client, objs = setup(tmp_path, tags=(("bin", 5),))
+    b = objs["bin"]
+    b.on_check_now()
+    run_once(cam)
+    assert b.reference.orient is not None               # 0 set automatically
+    assert client.last("tagsense/bin/rotation") == "0"
+    assert client.last("tagsense/bin/rotation/available") == "online"
+    assert json.loads(client.last("tagsense/bin/rotation/attributes"))["steps"] == 4
+    src.jpeg = jpeg(rot90=2)                             # the bin men turned it round
+    b.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/bin/rotation") == "180"
+    assert abs(json.loads(client.last("tagsense/bin/rotation/attributes"))["angle"] - 180) < 3
+    snaps = b.snapshots.list()
+    assert (snaps[0]["from"], snaps[0]["to"]) == ("0°", "180°")
+    assert b.history_list()[0]["rotation"] == 180
+    assert b.chart_points()[-1]["rotation"] == 180
+    src.jpeg = jpeg(rot90=1)                             # 90 counter-clockwise = 270
+    b.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/bin/rotation") == "270"
+
+
+def test_set_orientation_and_steps(tmp_path):
+    cam, src, client, objs = setup(tmp_path, tags=(("bin", 5),))
+    b = objs["bin"]
+    assert not b.set_orientation()                       # nothing seen yet
+    b.on_check_now()
+    run_once(cam)
+    src.jpeg = jpeg(rot90=2)
+    b.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/bin/rotation") == "180"
+    assert b.set_orientation()
+    assert client.last("tagsense/bin/rotation") == "0"
+    b.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/bin/rotation") == "0"   # still the same layout
+    b.on_setting("rotation_steps", "1")
+    assert client.last("tagsense/bin/setting/rotation_steps") == "1"
+    src.jpeg = jpeg(rot90=0)
+    b.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/bin/rotation") == "0"   # 1 step: always 0
+    b.on_setting("rotation_steps", "4")
+    assert client.last("tagsense/bin/rotation") == "180" # re-stepped straight away
+    b.reset_reference()
+    assert b.reference.orient is None and b.rotation is None
+    assert client.last("tagsense/bin/rotation") == "None"
+
+
+def test_rotation_unavailable_when_absent(tmp_path):
+    cam, src, client, objs = setup(tmp_path, burst=1, tags=(("recycling", 7),))
+    r = objs["recycling"]
+    r.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/recycling/rotation/available") == "offline"
+    assert client.last("tagsense/recycling/rotation") is None
+    assert not r.set_orientation()

@@ -57,6 +57,9 @@ the live frame. Changes apply straight away.
   ID; objects not in the text are kept.
 - **Last 24 hours** chart and **State changes** snapshots are on each
   object's page.
+- **Rotation:** the search-area editor draws an arrow from the tag's centre
+  through its top edge (solid green: now; dashed cyan: at 0°). **Set current
+  orientation as 0°** and **Rotation steps** are in the Settings card.
 
 ### Global options
 
@@ -106,6 +109,19 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
 - **Reset learned position** (button): forget the learned usual size and
   position, e.g. after moving the object further from the camera. The size
   gate and warnings stay off until 10 new hits are learned.
+- **Rotation** (sensor, °): how far the tag is turned from its 0° position,
+  clockwise as seen by the camera, stepped by *Rotation steps*. Attributes:
+  `angle` (the exact angle, 0-360) and `steps`. Measured on the tag's own
+  surface, so perspective does not distort it; all accepted reads in a check
+  are averaged, and the value moves to a new step only once it is 5° past the
+  halfway point. It keeps its last value between sightings.
+- **Rotation steps** (number, 1-36, default 4): 4 = 0/90/180/270°, 8 = 45°
+  steps, 1 = always 0 (effectively off).
+- **Set current orientation as 0°** (button): the way the tag is turned now
+  becomes 0°. Until it is pressed, 0° comes from the first sighting, and
+  *Reset learned position* forgets it too.
+- The three rotation entities are **unavailable** while the object is not
+  present.
 - **Enabled** (switch) and **Poll interval** (number, seconds; 0 = manual only,
   otherwise at least 10).
 - **Crop x1/y1/x2/y2** (numbers, 0–1): the normalised region searched for the
@@ -127,6 +143,27 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
   plus the last one ever seen), tag size, tag aspect (the worst edge ratio of
   the accepted reads; compare with `max_aspect`), sanity
   ratio, miss streak, crop brightness and contrast.
+
+## Rotation: "has it been turned round?"
+
+There is no built-in "turned" sensor: what counts as turned is up to you.
+For example, a template binary sensor (Settings > Devices & services >
+Helpers > Template, or YAML):
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Bin turned round"
+        state: "{{ is_state('sensor.tagsense_bin_rotation', '180') }}"
+        availability: "{{ has_value('sensor.tagsense_bin_rotation') }}"
+```
+
+Or trigger an automation on the *Rotation* sensor changing to `180`.
+
+The tag must stay visible in every orientation you want to tell apart, so
+put it on the lid. A tag on one side of the object disappears when it is
+turned 180°; that would need a second tag with another ID, as a second
+object, on the opposite side.
 
 ## How a check decides
 

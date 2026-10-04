@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 
 from .detector import DEFAULT_CROP, validate_crop
+from .rotation import DEFAULT_STEPS, clamp_steps
 
 MIN_POLL_S = 10
 MAX_POLL_S = 86400
@@ -26,6 +27,7 @@ class Settings:
     crop_x2: float = DEFAULT_CROP[2]
     crop_y2: float = DEFAULT_CROP[3]
     enabled: bool = True
+    rotation_steps: int = DEFAULT_STEPS
 
     @property
     def crop(self):
@@ -41,9 +43,11 @@ class Settings:
                 new = clamp_poll(value)
             elif key == "enabled":
                 new = str(value).strip().upper() in ("ON", "TRUE", "1")
+            elif key == "rotation_steps":
+                new = clamp_steps(value)
             else:
                 new = round(min(1.0, max(0.0, float(value))), 4)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
         setattr(self, key, new)
         return new != old

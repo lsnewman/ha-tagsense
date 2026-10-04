@@ -186,6 +186,8 @@ class App:
             o.on_check_now()
         elif cmd == "reset_reference":
             o.reset_reference()
+        elif cmd == "set_orientation":
+            o.set_orientation()
 
     # --- lifecycle --------------------------------------------------------
 

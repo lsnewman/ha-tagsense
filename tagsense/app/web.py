@@ -113,6 +113,11 @@ class Api:
         self._obj(oid).reset_reference()
         return {"reset": oid}
 
+    def set_orientation(self, oid: str) -> dict:
+        if not self._obj(oid).set_orientation():
+            raise ApiError(409, "the object is not present: nothing to take 0° from")
+        return {"set_orientation": oid}
+
     def history(self, oid: str) -> list:
         return self._obj(oid).history_list()
 
@@ -217,6 +222,7 @@ ROUTES = [
     ("PATCH", r"/api/objects/(?P<oid>[a-z0-9_]+)/settings", "settings"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/check", "check"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/reset_reference", "reset_reference"),
+    ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/set_orientation", "set_orientation"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/history", "history"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/chart", "chart"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots", "snapshots"),
@@ -303,7 +309,7 @@ def make_handler(api: Api, allow_all: bool):
                 if name == "snapshot":
                     return self._send(200, api.snapshot(kw["oid"], kw["name"]), "image/jpeg", cache=True)
                 args = list(kw.values())
-                if method in ("POST", "PUT", "PATCH") and name not in ("check", "reset_reference"):
+                if method in ("POST", "PUT", "PATCH") and name not in ("check", "reset_reference", "set_orientation"):
                     args.append(self._body())
                 return self._json(200, getattr(api, name)(*args))
             except ApiError as e:

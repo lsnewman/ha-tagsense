@@ -24,6 +24,7 @@ from .ha_notify import Notifier
 from .mqtt_ha import ObjectPublisher, fmt
 from .objects import ObjectConfig, object_dir
 from .reference import MIN_HITS, Reference
+from .rotation import circular_mean, fmt_deg, lid_angle, snap
 from .scheduler import MANUAL, Scheduler
 from .settings import Settings
 from .snapshots import Snapshots
@@ -41,6 +42,11 @@ HISTORY_LEN = 50
 
 def _mean(xs):
     return sum(xs) / len(xs) if xs else None
+
+
+def _norm(corners, frame_wh) -> np.ndarray:
+    w, h = frame_wh
+    return np.asarray(corners, dtype=np.float64) / (w, h)
 
 
 @dataclass
@@ -101,6 +107,10 @@ class TrackedObject:
         self.last_diag: dict = {}
         self.last_presence_attrs: dict = {}
         self.last_status_attrs: dict = {}
+        # Rotation: the stepped value reported and the exact angle behind it
+        # (kept while the object is away; its entities are unavailable then).
+        self.rotation: float | None = None
+        self.rotation_angle: float | None = None
         self.snapshots = Snapshots(os.path.join(d, "snapshots"))
         self.checklog = CheckLog(os.path.join(d, "checks.jsonl"))
         # Rejection alert: reasons from the latest check with rejected target reads,
@@ -120,7 +130,8 @@ class TrackedObject:
     def settings_values(self) -> dict:
         s = self.settings
         return {"poll_interval": s.poll_interval, "crop_x1": s.crop_x1, "crop_y1": s.crop_y1,
-                "crop_x2": s.crop_x2, "crop_y2": s.crop_y2, "enabled": s.enabled}
+                "crop_x2": s.crop_x2, "crop_y2": s.crop_y2, "enabled": s.enabled,
+                "rotation_steps": s.rotation_steps}
 
     def on_setting(self, key: str, value: str, from_api: bool = False):
         with self.cond:
@@ -134,6 +145,9 @@ class TrackedObject:
                 elif key == "enabled":
                     self.sched.set_enabled(self.settings.enabled, now)
                     self._publish_state_locked()
+                elif key == "rotation_steps" and self.rotation_angle is not None:
+                    self.rotation = snap(self.rotation_angle, self.settings.rotation_steps)
+                    self._publish_rotation_locked()
                 self.cond.notify_all()
             stored = getattr(self.settings, key)
         # Echo the stored (possibly clamped) value. Overwrite the retained command
@@ -156,13 +170,28 @@ class TrackedObject:
         """Forget the learned usual position and size (the object has moved).
         The size gate and geometry warnings stay off until MIN_HITS new hits."""
         with self.cond:
-            self.reference = Reference()
+            self.reference = Reference()        # also forgets 0 deg: set again by the next hit
             self.reference.save(self.reference_path)
+            self.rotation = self.rotation_angle = None
             self.decision.reject_streak = 0
             self.decision.save(self.state_path)
             self._publish_state_locked()
         log.info("[%s] learned position reset", self.id)
         self._sync_alert()
+
+    def set_orientation(self) -> bool:
+        """Make the tag's current corner layout 0 deg. False if there is no hit to use."""
+        with self.cond:
+            present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
+            if not self.last_corners or not present:
+                log.warning("[%s] set orientation: the object is not present", self.id)
+                return False
+            self.reference.set_orient(self.last_corners)
+            self.reference.save(self.reference_path)
+            self.rotation, self.rotation_angle = 0.0, 0.0
+            self._publish_rotation_locked()
+        log.info("[%s] current orientation set as 0°", self.id)
+        return True
 
     def request(self, trigger: str):
         with self.cond:
@@ -186,6 +215,20 @@ class TrackedObject:
                                {**self.last_status_attrs, "miss_streak": self.decision.miss_streak,
                                 "last_seen": iso(self.decision.last_seen_ts)})
         self.pub.publish_problem(self._alert_locked())
+        self._publish_rotation_locked()
+
+    def _publish_rotation_locked(self):
+        present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
+        a = self.rotation_angle
+        self.pub.publish_rotation(present, fmt_deg(self.rotation) if self.rotation is not None else None,
+                                  round(a, 1) if a is not None else None, self.settings.rotation_steps)
+
+    def rotation_status(self) -> dict:
+        r, a = self.rotation, self.rotation_angle
+        return {"value": fmt_deg(r) if r is not None else None,
+                "angle": round(a, 1) if a is not None else None,
+                "steps": self.settings.rotation_steps, "zero_set": self.reference.orient is not None,
+                "zero_corners": self.reference.orient}
 
     # --- rejection alert --------------------------------------------------
 
@@ -294,12 +337,19 @@ class TrackedObject:
         warnings = []
         if validate_crop(raw_crop) != tuple(raw_crop):
             warnings.append(f"crop {raw_crop} invalid, using {crop}")
+        angle = None
         if best:
             if gw := self.reference.warning(best.det):     # compare before learning
                 warnings.append(gw)
                 log.warning("[%s] geometry: %s", self.id, gw)
             self.reference.learn(best.det)
+            if self.reference.orient is None:
+                self.reference.set_orient(_norm(best.det.corners, best.det.frame_wh))
+                log.info("[%s] rotation 0° set from the first hit", self.id)
             self.reference.save(self.reference_path)
+            ref = self.reference.orient
+            angle = circular_mean([a for r in hits if (a := lid_angle(
+                ref, _norm(r.det.corners, r.det.frame_wh))) is not None])
         phantoms = [ph for r in decoded for ph in r.det.others
                     if ph.rejected_target or ph.id not in self.known_ids]
         for ph in phantoms:
@@ -324,6 +374,14 @@ class TrackedObject:
                 self.last_reject_reasons = sorted({ph.reason for ph in rejected})
             self.sched.on_result(trigger, outcome, self.decision.miss_streak,
                                  self.cfg.absent_checks, time.monotonic())
+            prev_rotation = self.rotation
+            if angle is not None:
+                self.rotation_angle = angle
+                self.rotation = snap(angle, self.settings.rotation_steps, self.rotation)
+            rotated = prev_rotation is not None and self.rotation != prev_rotation
+            if rotated:
+                log.info("[%s] rotation %s° -> %s° (exact %.1f°)", self.id, fmt_deg(prev_rotation),
+                         fmt_deg(self.rotation), angle)
             value, reason = self.decision.reported(self.cfg, self.settings.enabled)
             if best:
                 d = best.det
@@ -374,6 +432,8 @@ class TrackedObject:
                 "at": iso(now), "trigger": trigger, "outcome": outcome, "frames": attempted,
                 "valid": len(valid), "hits": len(hits), "reported": value, "reason": reason,
                 "aspect": round(aspect, 2) if aspect else None,
+                "rotation": fmt_deg(self.rotation) if angle is not None else None,
+                "angle": round(angle, 1) if angle is not None else None,
                 "warning": self.last_diag["warning"],
                 "phantoms": [p.describe() for p in phantoms]})
             crop_std = self.last_diag["crop_std"]
@@ -381,6 +441,7 @@ class TrackedObject:
                 "t": round(now, 1), "hits": len(hits), "valid": len(valid), "frames": attempted,
                 "contrast": round(crop_std, 1) if crop_std is not None else None,
                 "aspect": round(aspect, 2) if aspect else None,
+                "rotation": fmt_deg(self.rotation) if angle is not None else None,
                 "outcome": outcome, "reported": value})
         jpeg = None
         if image_src is not None:
@@ -391,6 +452,9 @@ class TrackedObject:
             self.pub.publish_image(jpeg)
         if value != before:
             self.snapshots.add(iso(now), now, before, value, reason, jpeg)
+        if rotated:
+            self.snapshots.add(iso(now), now, f"{fmt_deg(prev_rotation)}°", f"{fmt_deg(self.rotation)}°",
+                               f"rotated (exact {angle:.1f}°)", jpeg)
         self._sync_alert()
         log.info("[%s] check %s: %d/%d valid, %d hits, %d fetch failures -> %s; reported %s (%s), "
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
@@ -427,6 +491,7 @@ class TrackedObject:
                    "size": self.reference.size if self.reference.hits else None,
                    "min_hits": MIN_HITS},
                 "alert": self._alert_locked(),
+                "rotation": self.rotation_status(),
                 "last_corners": self.last_corners,
                 "diag": self.last_diag,
                 "last_phantom": self.last_phantom,

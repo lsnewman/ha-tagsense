@@ -8,7 +8,9 @@ in its usual place. Stick a printed AprilTag on it, such as a wheelie bin, a
 car, a chair or a garage door. TagSense grabs frames from a camera that can
 see the tag, looks for it, and publishes **present / absent / unknown** to
 Home Assistant through MQTT discovery. One app can watch several tagged
-objects, on one or more cameras, and each appears as its own device. A
+objects, on one or more cameras, and each appears as its own device. It also
+reports how far each tag is turned, so you can tell when a bin comes back the
+wrong way round. A
 **TagSense panel** in the sidebar is where you add objects and draw each
 one's search area on a live camera frame.
 
@@ -50,6 +52,10 @@ it either finds your specific tag or it doesn't.
    - When the object is already present and the first frames all hit, the
      rest of the burst is skipped, so most checks fetch only
      `present_min_hits` frames.
+5. **Measure the rotation.** While the tag is seen, a *Rotation* sensor
+   reports how far it is turned from its 0° position (for example, a bin put
+   back the wrong way round), measured on the tag's own surface so
+   perspective does not distort it. See [Rotation](#rotation).
 
 Checks run on a timer, on demand from a **Check now** button, or both. Pressing
 Check now when the object has just been moved triggers a short series of
@@ -104,20 +110,23 @@ logged-in Home Assistant users can open it.
   or drag on the image to draw a new box. The last detection (green) and the
   learned usual position (cyan) are drawn on the frame, so you can see where
   the tag actually is. **Fit to tag** sets the box to the learned position
-  plus 3x the tag size on each side. Saving runs a check straight away.
-- **Settings:** Enabled and Poll interval. These are the same settings as the
-  MQTT entities, so changes show up in both places.
+  plus 3x the tag size on each side. Saving runs a check straight away. An
+  arrow shows which way the tag's top points now (solid green) and at 0°
+  (dashed cyan).
+- **Settings:** Enabled, Poll interval, Rotation steps and **Set current
+  orientation as 0°**. These are the same settings as the MQTT entities, so
+  changes show up in both places.
 - **Recent checks:** the last 50 checks since the app started (trigger,
   result, hits, tag aspect, what was reported, warnings, and ignored or
   rejected reads), plus the last ignored or rejected read with its image.
-- **Last 24 hours:** a chart of the hit rate, crop contrast and tag aspect
-  (against `max_aspect`) in 10-minute steps, over a band showing the reported
-  state. It is kept across restarts. Hover for the details of each step.
+- **Last 24 hours:** a chart of the hit rate, crop contrast, tag aspect
+  (against `max_aspect`) and rotation in 10-minute steps, over a band showing
+  the reported state. It is kept across restarts. Hover for the details of each step.
 
   ![24-hour chart: hit rate, crop contrast and tag aspect, over the reported state](docs/panel-chart.png)
 
-- **State changes:** the checked image each time the reported state changed
-  (the last 20 are kept).
+- **State changes:** the checked image each time the reported state or the
+  stepped rotation changed (the last 20 are kept).
 - **Tag rejected banner:** shown when the tag was read but rejected in 3
   checks in a row, with the reason and a **Reset learned position** button.
 - **Export / import** (overview page): all objects and their settings as
@@ -232,7 +241,9 @@ stored by the app so they survive restarts.
 | **Crop x1 / y1 / x2 / y2** | `0.65 / 0.45 / 1.0 / 1.0` | The part of the frame that is searched, as fractions of width and height (0 = left/top, 1 = right/bottom). The default is the bottom-right area of the development camera, so **set it for your scene**: the panel's search area editor is the easiest way. `0 / 0 / 1 / 1` searches the whole frame (slower). It must cover **every** spot where the object might be. A tighter crop is faster and has fewer places for phantoms to appear, but if it is too tight, an object moved slightly reads as absent. If x2 ≤ x1 or y2 ≤ y1, the default is used and a warning is raised. |
 | **Enabled** | on | Off pauses all checks. The main sensor goes unavailable and Status shows `unknown` with reason `disabled`. |
 | **Check now** | — | Runs a check immediately. It is intended for automations, for example when Frigate sees a person leave the area. |
-| **Reset learned position** | — | Forgets the learned usual size and position. Use it after moving the object, e.g. further from the camera. The size gate and position warnings stay off until 10 new hits are learned. |
+| **Reset learned position** | — | Forgets the learned usual size and position. Use it after moving the object, e.g. further from the camera. The size gate and position warnings stay off until 10 new hits are learned. It also forgets the 0° rotation, which is then taken from the next sighting. |
+| **Rotation steps** | `4` | 1-36. The *Rotation* sensor is rounded to this many evenly spaced values: 4 = 0/90/180/270°, 8 = 45° steps, 1 = always 0 (effectively off). Unavailable while the object is not present. |
+| **Set current orientation as 0°** | — | The way the tag is turned now becomes 0°. Until it is pressed, 0° comes from the first sighting. Unavailable while the object is not present. |
 
 **Tuning the crop:** change a crop value, press **Check now**, and look at the
 **Last crop** image. The tag is outlined in green, and any phantoms or rejected
@@ -249,6 +260,7 @@ below. Entity IDs follow the device, for example `binary_sensor.tagsense_bin`,
 | **TagSense `<name>`** (`binary_sensor`, occupancy) | `on` = present, `off` = absent. **Unavailable** when the state is unknown, when TagSense is disabled, or when the app is not running. Attributes: `last_seen`, `size_px`, `centre`, `area_px`, `tag_id`, `source`. |
 | **Status** (enum sensor) | `present`, `absent` or `unknown`, plus a `reason` attribute: `starting`, `restored`, `tag_seen`, `inconclusive`, `pending`, `no_tag`, `fetch_failed`, `all_frames_invalid`, `disabled`. The other attributes describe the last check: frames, valid, hits, and the trigger (`startup`, `poll`, `manual`, `confirm`, or `shared` when another object on the same camera requested the burst). |
 | **Tag rejected** (`binary_sensor`, problem) | On after 3 checks in a row in which the tag was read but every read was rejected by the shape gate (those checks count as misses). A Home Assistant notification with the reason (too small or too skewed), and what to change if the object really is there, appears at the same time. Both clear by themselves after a check without rejected reads. |
+| **Rotation** (sensor, °) | How far the tag is turned from its 0° position, clockwise as seen by the camera, stepped by *Rotation steps*. Attributes: `angle` (exact, 0-360) and `steps`. **Unavailable** while the object is not present. See [Rotation](#rotation). |
 | **Last crop** (image) | The latest crop with annotations. Green: the tag, with its ID, size and a red dot on corner 0. Orange: ignored reads of other IDs and rejected reads. |
 | Diagnostics | Last source, frame resolution, last error, warning, fetch time, detect time, fetch failures, discard rate, unique frames, discarded decodes, tag size, tag aspect, sanity ratio, miss streak, crop brightness, crop contrast. |
 
@@ -278,8 +290,35 @@ rejects anything. If the object's spot changes permanently, the average follows
 it within about 20 hits. The *Warning* sensor's attributes show what has been
 learned.
 
+## Rotation
+
+Added in 0.4.3 for bins that come back turned round. TagSense measures how
+far the tag is turned on its own surface (the lid), not in the image, so
+perspective does not distort it: on real frames a 90° turn measured within
+1°, where the raw image angle was nearly 30° out. All accepted reads in a
+check are averaged, then rounded to *Rotation steps*. A new step is only
+taken once the angle is 5° past the halfway point, so it does not flicker.
+
+There is no built-in "turned" sensor. Build one with a template, for example:
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Bin turned round"
+        state: "{{ is_state('sensor.tagsense_bin_rotation', '180') }}"
+        availability: "{{ has_value('sensor.tagsense_bin_rotation') }}"
+```
+
+**The tag must stay visible in every orientation** you want to tell apart,
+so it belongs on the lid. A tag on the side of a bin disappears when the bin
+is turned 180°; telling those apart would need a second tag with another ID
+(a second object) on the opposite side.
+
 ## Upgrading
 
+- **To 0.4.3:** new *Rotation*, *Rotation steps* and *Set current orientation
+  as 0°* entities appear. 0° is set from the first sighting after the update;
+  press the button if the object was not in its normal orientation then.
 - **To 0.4.2:** the *Last check* sensor is removed (it wrote to the logbook on
   every check; the time is still the `last_check` attribute of *Status*), and
   *Phantom decodes* is renamed *Discarded decodes* with the same entity ID.
@@ -301,6 +340,9 @@ learned.
 - **Tested on one setup:** a TP-Link Tapo camera through Frigate's go2rtc,
   with a wheelie bin and one tag lying flat on its lid. Other objects and
   placements should work, but have not been tested.
+- **Rotation is only tested on simulated turns.** The angle was checked on
+  real frames with the tag turned digitally in place (within 1° at every 45°
+  step), not yet on a bin actually turned round, where the tag also moves.
 - **Phantoms.** tag16h5 trades error-resistance for small size. The ID filter
   and shape gate protect the decision, but a false decode of your exact ID with
   a plausible shape is still possible. Phantoms are logged and drawn so you can

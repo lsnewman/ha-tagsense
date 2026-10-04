@@ -10,13 +10,15 @@ from app.detector import DEFAULT_CROP, Detector, annotate, validate_crop
 log = logging.getLogger(__name__)
 
 
-def synthetic_frame(diag_px: float, centre=(1800, 736), seed=0, tag_id=5):
-    """1080p noisy frame with a foreshortened tag16h5 marker (plus quiet zone)."""
+def synthetic_frame(diag_px: float, centre=(1800, 736), seed=0, tag_id=5, rot90=0):
+    """1080p noisy frame with a foreshortened tag16h5 marker (plus quiet zone),
+    the marker turned rot90 x 90 deg counter-clockwise on the lid."""
     rng = np.random.default_rng(seed)
     frame = rng.normal(110, 25, (1080, 1920, 3)).clip(0, 255).astype(np.uint8)
     frame = cv2.GaussianBlur(frame, (5, 5), 1.0)
     marker = aruco.generateImageMarker(
         aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_16h5), tag_id, 120)
+    marker = np.ascontiguousarray(np.rot90(marker, rot90))
     tile = cv2.copyMakeBorder(marker, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
     s = tile.shape[0]
     # Trapezoid squashed vertically (camera looking down at the lid).

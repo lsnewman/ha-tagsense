@@ -22,7 +22,8 @@ SUPPORT_URL = "https://github.com/lsnewman/ha-tagsense"
 # Enum sensor values. If HA rejects "unknown" as an option, change it here only.
 ENUM_PRESENT, ENUM_ABSENT, ENUM_UNKNOWN = "present", "absent", "unknown"
 
-SETTING_KEYS = ("poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2", "enabled")
+SETTING_KEYS = ("poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2", "enabled",
+                "rotation_steps")
 
 # (key, name, extra discovery fields); "{attrs}" is replaced by an attributes topic
 DIAGNOSTICS = [
@@ -52,7 +53,7 @@ DIAGNOSTICS = [
 ]
 # Removed entities: their discovery config is cleared so HA deletes them.
 RETIRED_DIAGNOSTICS = ("last_check",)
-COMMANDS = ("check_now", "reset_reference")
+COMMANDS = ("check_now", "reset_reference", "set_orientation")
 DIAG_ATTRS = ("reference", "phantoms", "crop_stats")
 
 
@@ -108,6 +109,9 @@ class Topics:
         self.image = f"{b}/image"
         self.problem = f"{b}/problem"
         self.problem_attrs = f"{b}/problem/attributes"
+        self.rotation = f"{b}/rotation"
+        self.rotation_attrs = f"{b}/rotation/attributes"
+        self.rotation_available = f"{b}/rotation/available"
 
     def cmd(self, name: str) -> str:
         return f"{self.base}/cmd/{name}"
@@ -133,6 +137,9 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
               "sw_version": version}
     origin = {"name": "TagSense", "sw_version": version, "support_url": SUPPORT_URL}
     app_avail = [{"topic": AVAILABILITY}]
+    # Rotation entities only make sense while the object is there.
+    rot_avail = {"availability": app_avail + [{"topic": t.rotation_available}],
+                 "availability_mode": "all"}
 
     def cfg(component: str, key: str, payload: dict) -> tuple[str, dict]:
         p = {"unique_id": f"tagsense_{obj_id}_{key}", "device": device, "origin": origin,
@@ -159,6 +166,18 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
         cfg("button", "reset_reference", {
             "name": "Reset learned position", "entity_category": "config",
             "command_topic": t.cmd("reset_reference"), "icon": "mdi:map-marker-off"}),
+        cfg("sensor", "rotation", {
+            "name": "Rotation", "unit_of_measurement": "°", "state_class": "measurement",
+            "icon": "mdi:rotate-right", "state_topic": t.rotation,
+            "json_attributes_topic": t.rotation_attrs, **rot_avail}),
+        cfg("number", "rotation_steps", {
+            "name": "Rotation steps", "entity_category": "config", "mode": "box",
+            "min": 1, "max": 36, "step": 1, "icon": "mdi:angle-acute",
+            "command_topic": t.set("rotation_steps"), "state_topic": t.setting("rotation_steps"),
+            "retain": True, **rot_avail}),
+        cfg("button", "set_orientation", {
+            "name": "Set current orientation as 0°", "entity_category": "config",
+            "command_topic": t.cmd("set_orientation"), "icon": "mdi:rotate-left", **rot_avail}),
         cfg("switch", "enabled", {
             "name": "Enabled", "entity_category": "config",
             "command_topic": t.set("enabled"), "state_topic": t.setting("enabled"),
@@ -235,6 +254,13 @@ class ObjectPublisher:
         self.pub(self.t.problem_attrs, json.dumps(alert or {}))
         self.pub(self.t.problem, "ON" if alert else "OFF")
 
+    def publish_rotation(self, available: bool, value: float | None, angle: float | None,
+                         steps: int):
+        if available:
+            self.pub(self.t.rotation_attrs, json.dumps({"angle": angle, "steps": steps}))
+            self.pub(self.t.rotation, fmt(value))
+        self.pub(self.t.rotation_available, ONLINE if available else OFFLINE)
+
     def publish_image(self, jpeg: bytes):
         self.pub(self.t.image, jpeg, retain=False)
 
@@ -243,7 +269,7 @@ class ObjectPublisher:
         t = self.t
         topics = [topic for topic, _ in discovery_configs(self.client.version, self.id, self.name)]
         topics += [t.presence, t.presence_attrs, t.presence_available, t.status, t.status_attrs,
-                   t.problem, t.problem_attrs]
+                   t.problem, t.problem_attrs, t.rotation, t.rotation_attrs, t.rotation_available]
         topics += [t.cmd(c) for c in COMMANDS] + self._retired_topics()
         topics += [t.setting(k) for k in SETTING_KEYS] + [t.set(k) for k in SETTING_KEYS]
         topics += [t.diag(k) for k, _, _ in DIAGNOSTICS]

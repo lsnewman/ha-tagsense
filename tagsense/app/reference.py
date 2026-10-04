@@ -26,6 +26,7 @@ class Reference:
     size: float = 0.0       # tag size as a fraction of frame height
     cx: float = 0.0         # normalised centre
     cy: float = 0.0
+    orient: list | None = None  # normalised corners that define 0 deg (None = not set yet)
 
     @property
     def ready(self) -> bool:
@@ -63,6 +64,9 @@ class Reference:
             self.cx += a * (cx - self.cx)
             self.cy += a * (cy - self.cy)
         self.hits += 1
+
+    def set_orient(self, corners_norm):
+        self.orient = [[round(float(x), 5), round(float(y), 5)] for x, y in corners_norm]
 
     def as_attrs(self) -> dict:
         return {"learned_hits": self.hits, "usual_size_pct": round(self.size * 100, 2),
