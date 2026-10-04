@@ -229,7 +229,11 @@ shared by every app, so if TagSense used it, any other app could publish a
 fake access event.
 
 1. In the **Mosquitto broker** app, add a login under *Logins*, for example
-   `tagsense_access` with a long random password.
+   `tagsense_access` with a long random password. **Use this login for
+   TagSense access only.** Never give it to another app, integration or
+   device (ESPHome, zigbee2mqtt, Node-RED, a phone app...), and never reuse
+   its password. Anything that can log in as this user can fake an access
+   event.
 2. Restrict who may write the access topics (see the ACL below).
 3. On TagSense's **Configuration** tab, set `access_enabled` to on, and set
    `access_mqtt_username` and `access_mqtt_password` to the new login. Then

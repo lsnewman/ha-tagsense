@@ -1,0 +1,74 @@
+configuration:
+  go2rtc_url:
+    name: go2rtc URL
+    description: >-
+      Base URL of go2rtc, e.g. http://<frigate-hostname>:1984. Needed if any
+      object or scanner uses a go2rtc stream. Everything else is set in the
+      TagSense panel in the sidebar.
+  max_aspect:
+    name: Shape gate, max aspect
+    description: >-
+      A read of an object's tag counts only if its longest edge is at most
+      this many times its shortest. 0 turns it off.
+  min_size_ratio:
+    name: Shape gate, min size ratio
+    description: >-
+      Once 10 sightings are learned, reads smaller than this fraction of the
+      usual tag size are rejected. 0 turns it off.
+  burst_size:
+    name: Frames per check
+    description: How many frames each check fetches (1-20).
+  burst_interval_s:
+    name: Seconds between frames
+    description: Spacing between the frames of one check. 0 grabs them back to back.
+  present_min_hits:
+    name: Hits needed for present
+    description: Frames in one check that must show the tag before reporting present (1-3).
+  absent_checks:
+    name: Misses needed for absent
+    description: Consecutive clean misses before reporting absent (1-20).
+  confirm_delay_s:
+    name: Confirmation delay
+    description: Seconds between confirmation checks after Check now finds no tag.
+  unknown_after_failures:
+    name: Failures before unknown
+    description: Consecutive checks with no usable frame before the state becomes unknown (1-5).
+  sanity_min_ratio:
+    name: Smear threshold
+    description: Frames scoring below this are treated as smeared and discarded.
+  sanity_min_h:
+    name: Dead-feed threshold
+    description: Below this the crop is uniform (a black or dead feed) and the frame is discarded.
+  log_level:
+    name: Log level
+    description: At info there is one line per check.
+  mqtt_host:
+    name: MQTT host (override)
+    description: Only to use a broker other than the Mosquitto app. Leave empty otherwise.
+  mqtt_port:
+    name: MQTT port (override)
+    description: Only with an MQTT host override.
+  mqtt_username:
+    name: MQTT username (override)
+    description: >-
+      Only with an MQTT host override. This is the bin sensor's login, not
+      the access login.
+  mqtt_password:
+    name: MQTT password (override)
+    description: Only with an MQTT host override.
+  access_enabled:
+    name: Access codes (preview)
+    description: >-
+      Turns on QR access scanning (off by default). It needs its own MQTT
+      login below and a broker ACL; see the Documentation tab. TagSense never
+      unlocks anything: it only emits events for your automations.
+  access_mqtt_username:
+    name: Access MQTT username
+    description: >-
+      A login created ONLY for TagSense access, in the Mosquitto app's
+      Logins. Never reuse it for another app, integration or device, and
+      never use the login shared by all apps: anything that can log in as
+      this user can fake an access event.
+  access_mqtt_password:
+    name: Access MQTT password
+    description: A long random password used nowhere else.
