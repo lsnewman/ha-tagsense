@@ -1,6 +1,7 @@
 """Offline check over a folder of frames.
 
-    python -m app.check DIR [--crop x1,y1,x2,y2] [--tag-id 5] [--save-annotated OUT]
+    python -m app.check DIR [--crop x1,y1,x2,y2] [--tag-id 5] [--family tag16h5]
+                            [--save-annotated OUT]
 
 Folder names are used as labels: a hit under absent/ is flagged PHANTOM, a miss
 under present/ is MISSED, and a valid frame under smear/ or corrupt/ is NOT-REJECTED.
@@ -13,7 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from .analysis import analyse
-from .detector import DEFAULT_CROP, DEFAULT_MAX_ASPECT, Detector, annotate, validate_crop
+from .detector import DEFAULT_CROP, DEFAULT_FAMILY, FAMILIES, DEFAULT_MAX_ASPECT, Detector, annotate, validate_crop
 from .sanity import DEFAULT_MIN_H, DEFAULT_MIN_RATIO
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
@@ -32,6 +33,7 @@ def main(argv=None) -> int:
     ap.add_argument("dir", type=Path)
     ap.add_argument("--crop", type=parse_crop, default=DEFAULT_CROP)
     ap.add_argument("--tag-id", type=int, default=5)
+    ap.add_argument("--family", default=DEFAULT_FAMILY, choices=sorted(FAMILIES))
     ap.add_argument("--max-aspect", type=float, default=DEFAULT_MAX_ASPECT,
                     help="shape gate: reject target decodes above this edge ratio (0 = off)")
     ap.add_argument("--min-ratio", type=float, default=DEFAULT_MIN_RATIO)
@@ -47,7 +49,7 @@ def main(argv=None) -> int:
     if a.save_annotated:
         a.save_annotated.mkdir(parents=True, exist_ok=True)
 
-    detector = Detector(a.tag_id, a.max_aspect)
+    detector = Detector(a.tag_id, a.max_aspect, a.family)
     ratios = defaultdict(list)
     problems = 0
     print(f"crop={a.crop} tag_id={a.tag_id} min_ratio={a.min_ratio} min_h={a.min_h}")

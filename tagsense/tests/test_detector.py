@@ -5,19 +5,21 @@ import cv2.aruco as aruco
 import numpy as np
 import pytest
 
-from app.detector import DEFAULT_CROP, Detector, annotate, validate_crop
+from app.detector import DEFAULT_CROP, Detector, annotate, family_info, validate_crop
 
 log = logging.getLogger(__name__)
 
 
-def synthetic_frame(diag_px: float, centre=(1800, 736), seed=0, tag_id=5, rot90=0):
-    """1080p noisy frame with a foreshortened tag16h5 marker (plus quiet zone),
-    the marker turned rot90 x 90 deg counter-clockwise on the lid."""
+def synthetic_frame(diag_px: float, centre=(1800, 736), seed=0, tag_id=5, rot90=0,
+                    family="tag16h5"):
+    """1080p noisy frame with a foreshortened AprilTag marker (plus a 20 px quiet
+    zone), the marker turned rot90 x 90 deg counter-clockwise on the lid."""
     rng = np.random.default_rng(seed)
     frame = rng.normal(110, 25, (1080, 1920, 3)).clip(0, 255).astype(np.uint8)
     frame = cv2.GaussianBlur(frame, (5, 5), 1.0)
-    marker = aruco.generateImageMarker(
-        aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_16h5), tag_id, 120)
+    fi = family_info(family)
+    side = fi.cells * 20                 # 20 px per cell (120 px for tag16h5)
+    marker = aruco.generateImageMarker(fi.dictionary, tag_id, side)
     marker = np.ascontiguousarray(np.rot90(marker, rot90))
     tile = cv2.copyMakeBorder(marker, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
     s = tile.shape[0]
@@ -28,7 +30,8 @@ def synthetic_frame(diag_px: float, centre=(1800, 736), seed=0, tag_id=5, rot90=
     dst_tag = np.float32([[cx - half_w * 0.9, cy - half_h], [cx + half_w * 0.9, cy - half_h],
                           [cx + half_w, cy + half_h], [cx - half_w, cy + half_h]])
     # Map the tile corners so that the inner marker lands on dst_tag.
-    src_marker = np.float32([[20, 20], [140, 20], [140, 140], [20, 140]])
+    e = 20 + side
+    src_marker = np.float32([[20, 20], [e, 20], [e, e], [20, e]])
     H = cv2.getPerspectiveTransform(src_marker, dst_tag)
     warped = cv2.warpPerspective(cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR), H, (1920, 1080),
                                  flags=cv2.INTER_AREA)

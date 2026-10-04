@@ -1,0 +1,258 @@
+# TagSense design spec
+
+This document records how TagSense works, why it works that way, and the
+measurements behind its numbers. The user docs are `tagsense/DOCS.md` (the app's
+Documentation tab) and `README.md`, and the history is `tagsense/CHANGELOG.md`.
+Keep this file in step when a design decision or a tuned value changes.
+
+## Repo rules
+
+- No hostnames, IP addresses of the development network, tokens, passwords or
+  other secrets in the repo, the docs, test data or commit messages.
+  Examples use placeholders such as `<frigate-hostname>`.
+- Real camera frames live in `test-frames/` (gitignored) and are never
+  committed. Tests that need them are skipped if the folder is missing
+  (`TAGSENSE_TESTDATA` overrides the path). Images in `docs/` are blurred
+  real frames (street, plates, letterboxes, reflections, timestamp) and are
+  approved by the maintainer before they are committed.
+- Bump `version` in `tagsense/config.yaml` with every release, or Home
+  Assistant will not offer the update.
+- New detection behaviour must be off or identical by default: existing
+  installs must see no change unless they opt in.
+- After installation, everything is set in the TagSense panel. App options
+  (the Configuration tab) are only for things needed before the panel can
+  work, such as `go2rtc_url` and the MQTT overrides (including the access
+  feature's on switch and its dedicated MQTT login), and for global tuning.
+  Never add a per-object setting as an app option. Never let a setting stop
+  the app from starting, because then it can't be fixed from the panel.
+
+## Architecture
+
+A Home Assistant app (Supervisor add-on), Python 3.12 on Debian slim (no
+OpenCV wheel exists for musl). It uses OpenCV `opencv-python-headless`
+5.0.0.93, paho-mqtt and requests, and runs on amd64 and aarch64.
+
+| Module | Role |
+|---|---|
+| `main.py` | Options, the `App`: builds camera workers and tracked objects, live reload, MQTT callbacks |
+| `objects.py` | Object config, validation, `/data/objects.json` |
+| `sources.py` | Frame fetchers: go2rtc `api/frame.jpeg`, HA camera proxy, fallback |
+| `cameras.py` | One worker thread per camera; a burst is fetched once and judged by every object on that camera, with early exit |
+| `analysis.py`, `sanity.py` | Per-frame pipeline: smear check, then detection |
+| `detector.py` | AprilTag detection on a crop, shape gate part 1, tag families, annotation |
+| `tracker.py` | One object: settings, decision, scheduler, learned reference, rotation, publishing |
+| `decision.py` | Debounced present/absent/unknown state machine |
+| `reference.py` | Learned usual size and position, and the 0° orientation |
+| `rotation.py` | Lid-plane rotation angle, circular mean, stepped value with hysteresis |
+| `mqtt_ha.py` | MQTT client and HA discovery; one HA device per object |
+| `web.py`, `web/index.html` | Ingress panel and its JSON API (ingress proxy IP only) |
+| `checklog.py`, `snapshots.py` | The 24 h chart log and the state-change images |
+| `ha_notify.py` | HA persistent notification for the rejection alert |
+| `tagprint.py` | Printable PNG/SVG tags |
+| `check.py`, `sweep.py` | Offline tools over a folder of frames |
+
+Data in `/data`: `options.json` (Supervisor), `objects.json`, and
+`objects/<id>/` holding `settings.json`, `state.json`, `reference.json`,
+`checks.jsonl` and `snapshots/`.
+
+MQTT: `tagsense/availability` (LWT); per object `tagsense/<id>/...` for
+state, attributes, diagnostics, settings (`set/<key>` in, `setting/<key>`
+out) and commands (`cmd/<name>`). Discovery is under
+`homeassistant/<component>/tagsense_<id>/<key>/config`.
+
+## Check and decision
+
+1. A check fetches up to `burst_size` frames, `burst_interval_s` apart. If
+   every object on the camera is already present and its first
+   `present_min_hits` frames all hit, the burst stops early.
+2. Each frame is decoded and scored for smear. Undecodable, smeared and flat
+   frames are discarded. A hit always counts, whatever the score.
+3. No usable frame means the check failed. After `unknown_after_failures`
+   failed checks in a row, the state is `unknown`. **A missing or bad frame
+   never produces absent.**
+4. At least `present_min_hits` accepted hits means present. Fewer (but more
+   than 0) is inconclusive: the state is kept and the miss streak resets.
+5. Usable frames with no accepted hit is a clean miss. `absent_checks` misses
+   in a row means absent. The streak resets if the previous miss is older
+   than 3 poll intervals (at least 5 min).
+6. Reads rejected by the shape gate are not the tag, so a check whose only
+   reads were rejected is a miss. This was decided on 2026-10-04: a repeating
+   phantom of the target ID must never hold the state at present. Three such
+   checks in a row raise the *Tag rejected* alert.
+7. *Check now* that finds no tag schedules confirmation checks every
+   `confirm_delay_s` until absent is confirmed or the tag is seen.
+
+## Detector tuning (tag16h5)
+
+The pipeline crops, converts to grey, upscales 2x (cubic), then runs
+`ArucoDetector` with `DICT_APRILTAG_16h5` and these parameters:
+
+| Parameter | Value | OpenCV default |
+|---|---|---|
+| `perspectiveRemovePixelPerCell` | 8 | 4 |
+| `perspectiveRemoveIgnoredMarginPerCell` | 0.15 | 0.13 |
+| `maxErroneousBitsInBorderRate` | 0.5 | 0.35 |
+| `cornerRefinementMethod` | `CORNER_REFINE_APRILTAG` | none |
+| `aprilTagQuadDecimate` | 1.0 | 0.0 |
+| `cornerRefinementMaxIterations` | 30 | 30 |
+
+Evidence from the original tuning sweep (development camera, tag lying flat
+on a bin lid, about 50 px across in 1080p):
+
+- These parameters won the sweep. The `adaptiveThreshWinSize*`,
+  `minMarkerPerimeterRate` and `polygonalApproxAccuracyRate` tweaks produced a
+  phantom ID in full-frame tests, so they must not be added.
+- Contrast enhancement (CLAHE) was expected to help and in fact hurt
+  decoding. It is not used.
+- The 2x upscale gives the quad finder enough pixels at about 50 px tags.
+
+### Shape gate
+
+- **Part 1, aspect** (`max_aspect`, default 2.0; it was 3.0 until 0.4.1),
+  longest edge over shortest:
+  - The real tag measured 1.45-1.52 by day and up to 2.1 once at night under
+    IR (2026-10-02 01:35, rejected; the maintainer kept 2.0 for now, and 2.5
+    is the suggested fallback).
+  - Gravel phantoms measured 2.2-6, and a large 105 px phantom 4.5.
+- **Part 2, size** (`min_size_ratio`, default 0.5), active after 10 learned
+  hits: phantoms were 15-40% of the real tag's size (8-20 px against 50 px).
+  There is deliberately no upper size limit, so an object can move closer.
+- **Phantom rate before the gate:** in the first real logs (2026-10-01),
+  about one read of a non-target ID every 9 minutes, 8-20 px, aspect 2.2-4.
+  `present_min_hits` 2 means a single stray read cannot flip the state.
+
+### Smear sanity check
+
+- The score is the vertical pixel variation divided by the horizontal one,
+  within the crop:
+  - Smeared (vertical-streak) frames scored ≤ 0.01.
+  - Good frames and darkened copies scored ≥ 0.93.
+  - Real IR night frames scored 0.75-0.86.
+- Thresholds: `sanity_min_ratio` 0.5, and `sanity_min_h` 0.02 for a uniform
+  (dead) feed.
+
+### Night/IR (development camera)
+
+- Day crop contrast is about 65, against about 14 at night under IR.
+- The first night (2026-10-01/02) gave about 800 checks, all present. 60
+  checks hit 4/5 frames and 9 hit 3/5; day checks were always 5/5.
+- A daytime IR test (brightness 96 → 56, contrast 67 → 47, tag 48 px)
+  gave 5/5.
+
+## Rotation (0.4.3)
+
+- The raw image-plane angle is wrong under perspective: a 90° turn showed as
+  117-119° and 270° as about 295°, while 180° was fine.
+- The method used: map the current corners through the inverse of the
+  reference homography (reference corners to the unit square) onto the lid
+  plane, then take the mean rotation of the four corner vectors against the
+  unit square.
+- On real frames turned digitally in place, the error was within 1° at every
+  45° step.
+- Readings are combined with a circular mean over the accepted reads of a
+  check, then snapped to `rotation_steps` with min(5°, step/4) hysteresis.
+- The aruco corner order is fixed to the tag pattern: corner 0 is the red dot
+  in `annotate()`.
+- Not yet validated: a real bin physically turned 180°.
+
+## Tag families (0.5.0)
+
+Each object has a `tag_family` field (in `objects.json`, set in the panel's
+object form; missing means tag16h5, so older files load unchanged). The ID
+is validated against that object's family when it is saved, so a mismatch
+can never stop the app at startup. On a shared camera, two objects clash
+only if both the family and the ID match, and "known" IDs (other objects'
+tags, which are not logged as ignored reads) are per family. The ID counts and grid
+sizes are read from OpenCV at runtime (`family_info`), and a test pins them
+against 5.0.0.93:
+
+| Family | IDs | Grid with border | Correctable bits |
+|---|---|---|---|
+| tag16h5 | 30 | 6x6 | 2 |
+| tag25h9 | 35 | 7x7 | 4 |
+| tag36h10 | 2320 | 8x8 | 4 |
+| tag36h11 | 587 | 8x8 | 5 |
+
+- The detector parameters are the tag16h5 ones for every family. Only tag16h5
+  is tuned and tested on real frames.
+- With the default family, `python -m app.check ../test-frames` output was
+  identical to 0.4.3, timings aside.
+
+### Sweep results
+
+These results are from `python -m app.sweep ../test-frames --ablation --full-frame`, run on 2026-10-04 with 19 present, 2 absent and 2 smear frames from the development camera. The real tag is about 50 px across.
+
+**Synthetic.** Each family's tag was drawn on a lid at random positions inside the crop, over real backgrounds, 20 trials per cell. The table shows decodes by tag size (the longer diagonal, in px):
+
+| Family, condition | 16 | 20 | 24 | 28 | 32 | 40 | 50 | 64 |
+|---|---|---|---|---|---|---|---|---|
+| tag16h5 plain | 13 | 16 | 18 | 20 | 20 | 20 | 20 | 20 |
+| tag16h5 blur | 0 | 1 | 8 | 15 | 19 | 20 | 20 | 20 |
+| tag16h5 IR-like | 15 | 18 | 19 | 20 | 20 | 20 | 20 | 20 |
+| tag25h9 plain | 8 | 13 | 16 | 17 | 20 | 20 | 20 | 20 |
+| tag25h9 blur | 0 | 0 | 2 | 7 | 16 | 20 | 20 | 20 |
+| tag25h9 IR-like | 9 | 11 | 19 | 18 | 20 | 20 | 20 | 20 |
+| tag36h10 plain | 8 | 9 | 17 | 20 | 16 | 20 | 20 | 20 |
+| tag36h10 blur | 0 | 0 | 0 | 1 | 6 | 19 | 20 | 20 |
+| tag36h10 IR-like | 9 | 4 | 17 | 19 | 19 | 20 | 20 | 20 |
+| tag36h11 plain | 9 | 11 | 18 | 20 | 17 | 20 | 20 | 20 |
+| tag36h11 blur | 0 | 0 | 0 | 1 | 13 | 19 | 20 | 20 |
+| tag36h11 IR-like | 14 | 8 | 17 | 20 | 18 | 20 | 20 | 20 |
+
+With blur, tag16h5 is reliable from about 32 px, tag25h9 from about 32-40 px, and the 6x6 families from about 40 px. That is roughly 1.25x the size of tag16h5.
+
+**Transplant.** The family's tag was warped onto the real tag's corners in each of the 19 present frames, then shrunk about its centre:
+
+| Family | x1 | x0.85 | x0.7 | x0.6 | x0.5 | x0.4 |
+|---|---|---|---|---|---|---|
+| tag16h5 | 19 | 19 | 19 | 19 | 19 | 19 |
+| tag25h9 | 19 | 19 | 19 | 19 | 19 | 13 |
+| tag36h10 | 19 | 19 | 19 | 19 | 18 | 7 |
+| tag36h11 | 19 | 19 | 19 | 19 | 19 | 17 |
+
+This table is optimistic, for two reasons. The pasted tag is a crisp render. And the 19 frames are near-duplicates, the same scene and the same position, so in practice they are one sample. The sweep now also has a blurred transplant variant, which has not been run in full yet.
+
+**Phantoms.** These are decodes of any ID, with the real tag excluded:
+- In the frames' crops (absent, smear, present) every family scored 0.
+- Over whole frames, tag16h5 had 1 phantom in the present frames and the other families 0. This matches the gravel phantoms seen in real logs.
+- On 2000 random gravel-like textures (seed 11): tag16h5 had **40**, tag25h9 **1**, tag36h10 **0** and tag36h11 **0**. 200 textures were too few to show anything, since every family scored 0.
+
+**Ablation.** Each tuned parameter was reset to the OpenCV default, one at a time, and tested on the crisp transplant. Everything was 19/19 down to x0.5, so the differences only show at x0.4:
+
+| Reset to default | tag16h5 | tag25h9 | tag36h10 | tag36h11 |
+|---|---|---|---|---|
+| (tuned) | 19 | 13 | 7 | 17 |
+| perspectiveRemovePixelPerCell 4 | 18 | 9 | 6 | 16 |
+| cornerRefinementMethod none | 16 | 18 | 4 | 10 |
+| each of the other four | unchanged | unchanged | unchanged | unchanged |
+
+- At x0.6 and x0.5, `perspectiveRemovePixelPerCell` 4 also cost tag36h10 (5/19 at x0.6), tag25h9 (15/19 at x0.6) and tag36h11 (14/19 at x0.5).
+- So 8 pixels per cell and the AprilTag corner refinement are worth keeping for every family. tag25h9 at x0.4 is the only case where the refinement hurt.
+- No setting changed the texture phantom count. That ablation used only 200 textures, so it is not conclusive.
+
+**Conclusions:**
+- The tag16h5 parameters are a reasonable default for every family.
+- The larger families trade about 1.25x the printed size for far fewer phantoms.
+- No family is called supported until it has been tested on real frames (see below).
+
+### Still needed before calling any other family "supported"
+
+Print a tag25h9 and a tag36h11 tag at the same size as the bin's tag16h5 tag,
+place them on the lid, and capture day and IR-night frames into
+`test-frames/<family>/{present,absent}`. Then run `app.check --family` and
+`app.sweep` on them. Until then the docs say "untested on a real camera".
+
+## Access codes (0.5.0, planned)
+
+Design under review; not built yet. Summary:
+- A separate `app/access/` module, off by default, sharing no state with the
+  bin logic.
+- It has its own MQTT connection with dedicated, required credentials, under
+  `tagsense/access/#`, protected by a broker ACL.
+- A doorbell press gates a short scan window.
+- Codes are signed: rotating per-person codes for permanent access, and
+  single-use static codes with a mandatory expiry.
+- They are verified in one place inside the app, and the app fails closed.
+- TagSense only emits events and never unlocks anything.
+
+This section will hold the full design and threat model once it is built.

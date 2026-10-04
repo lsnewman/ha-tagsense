@@ -111,9 +111,11 @@ class App:
             objects[oc.id] = obj
         for cam in cameras.values():
             for o in cam.objects:
-                o.known_ids = {p.oc.tag_id for p in cam.objects if p is not o}
+                o.known_ids = {p.oc.tag_id for p in cam.objects
+                               if p is not o and p.oc.tag_family == o.oc.tag_family}
             log.info("camera %s: %s", cam.name,
-                     ", ".join(f"{o.oc.name} (tag {o.oc.tag_id})" for o in cam.objects))
+                     ", ".join(f"{o.oc.name} ({o.oc.tag_family} {o.oc.tag_id})"
+                               for o in cam.objects))
         if not configs:
             log.info("no objects configured yet: add one in the TagSense panel")
         self.cameras, self.objects = cameras, objects

@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .mqtt_ha import SETTING_KEYS
 from .objects import ConfigError, ObjectConfig, parse_one, slugify, unique_id
+from .detector import DEFAULT_FAMILY, FAMILIES, family_info
 from .sources import FetchError, list_go2rtc_streams, list_ha_cameras
 from .tagprint import tag_png, tag_svg
 
@@ -23,7 +24,8 @@ log = logging.getLogger("tagsense.web")
 INGRESS_IPS = {"172.30.32.2"}
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 64 * 1024
-CONFIG_FIELDS = ("name", "tag_id", "source", "go2rtc_stream", "camera_entity", "fallback")
+CONFIG_FIELDS = ("name", "tag_family", "tag_id", "source", "go2rtc_stream", "camera_entity",
+                 "fallback")
 
 
 class ApiError(Exception):
@@ -49,6 +51,9 @@ class Api:
         return {"version": os.environ.get("TAGSENSE_VERSION", "dev"),
                 "go2rtc_configured": bool(self.app.opts.get("go2rtc_url")),
                 "max_aspect": t.max_aspect, "min_size_ratio": t.min_size_ratio,
+                "families": {f: {"ids": family_info(f).id_count, "cells": family_info(f).cells}
+                             for f in FAMILIES},
+                "default_family": DEFAULT_FAMILY,
                 "objects": [o.status() for o in self.app.objects.values()]}
 
     def sources(self) -> dict:
@@ -293,13 +298,15 @@ def make_handler(api: Api, allow_all: bool):
                 if name == "tag":
                     q = lambda k, d: (query.get(k) or [d])[0]
                     tag, quiet = int(kw["tag"]), q("quiet", "1") != "0"
+                    family = q("family", DEFAULT_FAMILY)
                     if kw["fmt"] == "svg":
                         size = float(q("size_mm", "100"))
-                        body = tag_svg(tag, size, quiet)
-                        self._attachment(f"tagsense-tag{tag}-{size:g}mm{'' if quiet else '-noborder'}.svg")
+                        body = tag_svg(tag, size, quiet, family)
+                        fam = "" if family == DEFAULT_FAMILY else f"{family}-"
+                        self._attachment(f"tagsense-{fam}tag{tag}-{size:g}mm{'' if quiet else '-noborder'}.svg")
                         return self._send(200, body, "image/svg+xml", cache=True)
                     body = tag_png(tag, int(q("cell", "100")), label=q("label", "1") != "0",
-                                   quiet=quiet)
+                                   quiet=quiet, family=family)
                     return self._send(200, body, "image/png", cache=True)
                 if name == "frame":
                     age = float((query.get("max_age") or ["0"])[0])

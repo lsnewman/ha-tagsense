@@ -2,6 +2,23 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.0 (in development)
+
+- **Tag family per object.** The object form in the panel has a new *Tag
+  family* choice: `tag16h5` (the default; existing objects stay on it),
+  `tag25h9`, `tag36h10` or `tag36h11`. The tag ID list follows the family
+  (0-29, 0-34, 0-2319, 0-586, as read from OpenCV), and *Print tag* and
+  export/import follow it too. Objects with different families can share a
+  camera. There is no new app option: everything is set in the panel.
+- Only tag16h5 is tuned and tested on real frames; the other families are
+  tested on synthetic frames only. Trade-off: bigger grids resist phantoms
+  far better (on 2000 random textures: tag16h5 40 false decodes, tag25h9 1,
+  the 36-bit families none), but need about 1.25x the printed size.
+- New `app/sweep.py` (development): per-family decode margin on synthetic
+  frames and on real frames with the tag swapped in, phantom counts, and a
+  one-at-a-time ablation of the tuned detector parameters. The results and
+  the design notes are in the new `SPEC.md`.
+
 ## 0.4.3
 
 - **Rotation sensor** (requested on Reddit: the bin men turn the bin round).

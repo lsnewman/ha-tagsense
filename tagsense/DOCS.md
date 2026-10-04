@@ -1,7 +1,7 @@
 # TagSense
 
 TagSense detects whether a tagged object (a wheelie bin, a car, a chair, ...)
-is in place from a printed AprilTag (family **tag16h5**) stuck on it. It grabs camera frames, checks
+is in place from a printed AprilTag (family **tag16h5** by default) stuck on it. It grabs camera frames, checks
 them, and publishes **present / absent / unknown** to Home Assistant via MQTT
 discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 
@@ -36,7 +36,7 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 ### Objects
 
 Objects are managed in the **TagSense panel** in the sidebar: click **Add
-object**, give it a name, the tag ID printed on it, and the camera that sees
+object**, give it a name, the tag family and ID printed on it, and the camera that sees
 it (a go2rtc stream or a Home Assistant camera). Then draw its search area on
 the live frame. Changes apply straight away.
 
@@ -189,8 +189,33 @@ object, on the opposite side.
 
 State and settings are stored in `/data` and survive restarts.
 
+## Tag families
+
+The detector settings were tuned on real frames for **tag16h5 only**. The
+other families use the same settings and are **untested on a real camera**.
+They have passed synthetic tests only (see `SPEC.md` in the repository).
+
+- **Smaller grid (tag16h5, 4x4 data cells):** big cells, so it decodes at the
+  smallest size and with the most blur. The cost is a low Hamming distance:
+  random texture (gravel, foliage) decodes as a valid tag more often. The
+  ID filter and shape gate are there because of this.
+- **Bigger grids (tag25h9 5x5, tag36h10/36h11 6x6):** much more resistant to
+  phantoms, but each cell is smaller at the same printed size. Print them
+  bigger: in the synthetic tests, the 6x6 families needed about 1.25x the tag
+  size of tag16h5 to decode as reliably when blurred.
+- tag36h11 is the usual choice in robotics. tag36h10 has more IDs, but less
+  error resistance.
+
+The family is chosen **per object**, in the panel's object form, next to the
+tag ID. The default is tag16h5. The tag ID list follows the family (IDs
+0-29 for tag16h5, 0-34 for tag25h9, 0-2319 for tag36h10, 0-586 for tag36h11),
+and *Print tag* prints in the object's family. Objects with different
+families can share a camera, even with the same ID. If you switch an
+existing object to a new tag, press *Reset learned position* once the new
+tag is in place.
+
 ## Tag and print notes
 
-- Use tag16h5, with a white quiet zone about as wide as the black border.
-  A matte finish is best.
+- Use the object's family (tag16h5 by default), with a white quiet zone
+  about as wide as the black border. A matte finish is best.
 - A larger print is the main way to gain decode margin at oblique angles.

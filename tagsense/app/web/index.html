@@ -178,7 +178,7 @@ function overview() {
   $main.innerHTML = `<div class="grid">${state.objects.map(o => `
     <div class="card">
       <div class="row"><h2 style="flex:1"><a href="#/obj/${o.id}">${esc(o.name)}</a></h2>${chip(o.state, "")}</div>
-      <div class="muted small">tag ${o.tag_id} · ${esc(o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity)} · ${esc(o.reason)}</div>
+      <div class="muted small">${esc(tagLabel(o))} · ${esc(o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity)} · ${esc(o.reason)}</div>
       ${o.alert ? `<div class="notice alert small" style="margin:10px 0 0">${esc(o.alert.message)}</div>` : ""}
       ${o.has_image ? `<img class="thumb" src="api/objects/${o.id}/last.jpg?t=${encodeURIComponent(o.last_check || "")}" alt="">`
                     : `<div class="thumb empty">no image yet</div>`}
@@ -316,7 +316,7 @@ function detail(id, isRefresh) {
     </div>
     <div class="card"><h3>State changes</h3><div id="d-snaps" class="small"><span class="muted">None yet.</span></div>
       <div class="hint">The checked image each time the reported state changed (the last 20 are kept).</div></div>
-    <div class="card" id="print-card"><h3>Print tag ${o.tag_id}</h3>
+    <div class="card" id="print-card"><h3>Print ${esc(tagLabel(o))}</h3>
       <div class="cols" style="grid-template-columns:minmax(0,1fr) 160px;align-items:start">
         <div>
           <div class="row">
@@ -349,7 +349,7 @@ let lastHistoryKey = "";
 async function updateDetail(o) {
   document.getElementById("d-chip").innerHTML = chip(o.state, o.reason);
   document.getElementById("d-sub").textContent =
-    `tag ${o.tag_id} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity}${o.fallback ? " (fallback " + (o.source === "go2rtc" ? o.camera_entity : "go2rtc " + o.go2rtc_stream) + ")" : ""} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
+    `${tagLabel(o)} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity}${o.fallback ? " (fallback " + (o.source === "go2rtc" ? o.camera_entity : "go2rtc " + o.go2rtc_stream) + ")" : ""} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
   document.getElementById("d-check").disabled = !o.settings.enabled;
   document.getElementById("d-alert").innerHTML = o.alert ? `<div class="notice alert" style="margin:0">
     <b>Tag rejected</b> · ${esc(o.alert.message)}
@@ -715,6 +715,18 @@ async function saveCrop() {
   } catch (e) { err.textContent = e.message; btn.disabled = false; }
 }
 
+// ---------- tag families ---------------------------------------------------
+const famOf = o => (o && o.tag_family) || state.default_family || "tag16h5";
+const famInfo = f => (state.families || {})[f] || { ids: 30, cells: 6 };
+// "tag 5", or "tag36h11 5" for a family other than the default
+const tagLabel = o => famOf(o) === (state.default_family || "tag16h5") ? `tag ${o.tag_id}` : `${famOf(o)} ${o.tag_id}`;
+function tagIdControl(family, value) {
+  const n = famInfo(family).ids;
+  return n <= 60
+    ? `<select id="f-tag">${Array.from({ length: n }, (_, i) => `<option ${i === +value ? "selected" : ""}>${i}</option>`).join("")}</select>`
+    : `<input id="f-tag" type="number" min="0" max="${n - 1}" step="1" required value="${Math.min(+value, n - 1)}" style="max-width:140px">`;
+}
+
 // ---------- print tag -----------------------------------------------------
 function initPrint(o) {
   const upd = () => {
@@ -722,12 +734,13 @@ function initPrint(o) {
     const quiet = document.getElementById("p-quiet").checked ? 1 : 0;
     const size = Math.max(5, Math.min(1000, +document.getElementById("p-size").value || 100));
     document.getElementById("p-size-row").style.display = fmt === "svg" ? "" : "none";
-    const url = fmt === "svg" ? `api/tag/${o.tag_id}.svg?size_mm=${size}&quiet=${quiet}`
-                              : `api/tag/${o.tag_id}.png?quiet=${quiet}`;
+    const fam = `family=${encodeURIComponent(famOf(o))}`, cells = famInfo(famOf(o)).cells;
+    const url = fmt === "svg" ? `api/tag/${o.tag_id}.svg?size_mm=${size}&quiet=${quiet}&${fam}`
+                              : `api/tag/${o.tag_id}.png?quiet=${quiet}&${fam}`;
     document.getElementById("p-download").href = url;
-    document.getElementById("p-preview").src = `api/tag/${o.tag_id}.png?cell=20&quiet=${quiet}&label=0`;
+    document.getElementById("p-preview").src = `api/tag/${o.tag_id}.png?cell=20&quiet=${quiet}&label=0&${fam}`;
     document.getElementById("p-desc").textContent = fmt === "svg"
-      ? `${quiet ? Math.round(size * 8 / 6) : size} mm square overall`
+      ? `${quiet ? Math.round(size * (cells + 2) / cells) : size} mm square overall`
       : "print at the largest size that fits";
   };
   document.querySelectorAll("input[name=p-fmt], #p-quiet, #p-size").forEach(el => el.addEventListener("input", upd));
@@ -750,10 +763,15 @@ async function objectForm(id) {
       <label for="f-id">ID <span class="muted">(optional)</span></label>
       <input id="f-id" pattern="[a-z0-9_]{1,40}" placeholder="made from the name">
       <div class="hint">Lowercase letters, digits and _. Used in entity IDs and cannot be changed later.</div>`}
+      <label for="f-family">Tag family</label>
+      <select id="f-family">${Object.entries(state.families || { tag16h5: { ids: 30 } }).map(([f, i]) =>
+        `<option value="${esc(f)}" ${f === famOf(v) ? "selected" : ""}>${esc(f)} (IDs 0-${i.ids - 1})${f === (state.default_family || "tag16h5") ? ", tested" : ", untested"}</option>`).join("")}</select>
+      <div class="hint">The AprilTag family of the printed tag. Only ${esc(state.default_family || "tag16h5")} is tested on a real camera;
+        the bigger families resist false reads better but need printing about 1.25x larger.</div>
       <label for="f-tag">Tag ID</label>
-      <select id="f-tag">${Array.from({ length: 30 }, (_, i) => `<option ${i === +v.tag_id ? "selected" : ""}>${i}</option>`).join("")}</select>
-      <div class="hint">The tag16h5 ID printed on this object. Objects on the same camera need different IDs.
-        <a href="api/tag/${v.tag_id}.png" target="_blank" id="f-print">Print this tag</a></div>
+      <span id="f-tag-wrap">${tagIdControl(famOf(v), v.tag_id)}</span>
+      <div class="hint">The ID printed on this object. Objects on the same camera need different IDs.
+        <a href="#" target="_blank" id="f-print">Print this tag</a></div>
       <label>Camera source</label>
       <div class="row">
         <label class="inline"><input type="radio" name="src" value="go2rtc" ${v.source === "go2rtc" ? "checked" : ""}> go2rtc stream</label>
@@ -783,8 +801,19 @@ async function objectForm(id) {
   };
   document.querySelectorAll("input[name=src], #f-fallback").forEach(r => r.addEventListener("change", toggle));
   toggle();
-  document.getElementById("f-tag").addEventListener("change", e =>
-    document.getElementById("f-print").href = `api/tag/${e.target.value}.png`);
+  const printLink = () => {
+    const fam = document.getElementById("f-family").value;
+    document.getElementById("f-print").href =
+      `api/tag/${document.getElementById("f-tag").value}.png?family=${encodeURIComponent(fam)}`;
+  };
+  document.getElementById("f-family").addEventListener("change", e => {
+    const cur = document.getElementById("f-tag").value;
+    document.getElementById("f-tag-wrap").innerHTML = tagIdControl(e.target.value, cur);
+    document.getElementById("f-tag").addEventListener("change", printLink);
+    printLink();
+  });
+  document.getElementById("f-tag").addEventListener("change", printLink);
+  printLink();
   api("sources").then(src => {
     document.getElementById("streams").innerHTML = src.go2rtc.map(s => `<option value="${esc(s)}">`).join("");
     document.getElementById("f-stream").placeholder = src.go2rtc.length ? "choose or type a stream" : "type a stream name";
@@ -799,6 +828,7 @@ async function objectForm(id) {
   document.getElementById("f").addEventListener("submit", async e => {
     e.preventDefault();
     const body = { name: document.getElementById("f-name").value.trim(),
+      tag_family: document.getElementById("f-family").value,
       tag_id: +document.getElementById("f-tag").value, source: srcSel(),
       go2rtc_stream: document.getElementById("f-stream").value.trim(),
       camera_entity: document.getElementById("f-entity").value,

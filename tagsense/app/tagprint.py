@@ -1,4 +1,4 @@
-"""Printable tag16h5 tags: PNG for paper, SVG (in mm) for cutting or 3D printing.
+"""Printable AprilTags: PNG for paper, SVG (in mm) for cutting or 3D printing.
 
 The detector needs a light area around the tag's black border (the "quiet
 zone"). It is added by default; leave it out only if the tag will sit on a
@@ -10,22 +10,23 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 
-CELLS = 6            # tag16h5: 4x4 data cells + 1-cell black border each side
+from .detector import DEFAULT_FAMILY, family_info
 
 
-def tag_grid(tag_id: int) -> np.ndarray:
-    """6x6 array, True = black cell."""
-    if not 0 <= tag_id <= 29:
-        raise ValueError("tag16h5 ids are 0-29")
-    img = aruco.generateImageMarker(
-        aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_16h5), tag_id, CELLS)
+def tag_grid(tag_id: int, family: str = DEFAULT_FAMILY) -> np.ndarray:
+    """cells x cells array (6x6 for tag16h5: 4x4 data + 1-cell border), True = black."""
+    fi = family_info(family)
+    if not 0 <= tag_id < fi.id_count:
+        raise ValueError(f"{family} ids are 0-{fi.id_count - 1}")
+    img = aruco.generateImageMarker(fi.dictionary, tag_id, fi.cells)
     return img == 0
 
 
-def tag_png(tag_id: int, cell_px: int = 100, label: bool = True, quiet: bool = True) -> bytes:
+def tag_png(tag_id: int, cell_px: int = 100, label: bool = True, quiet: bool = True,
+            family: str = DEFAULT_FAMILY) -> bytes:
     """PNG of the tag, with an optional one-cell white quiet zone and caption."""
     cell_px = max(10, min(int(cell_px), 400))
-    grid = tag_grid(tag_id)
+    grid = tag_grid(tag_id, family)
     img = np.where(np.kron(grid, np.ones((cell_px, cell_px), bool)), 0, 255).astype(np.uint8)
     if quiet:
         img = cv2.copyMakeBorder(img, cell_px, cell_px, cell_px, cell_px,
@@ -33,7 +34,7 @@ def tag_png(tag_id: int, cell_px: int = 100, label: bool = True, quiet: bool = T
     if label:
         caption = np.full((max(40, cell_px // 2), img.shape[1]), 255, np.uint8)
         scale = caption.shape[0] / 60
-        text = f"TagSense  tag16h5  id {tag_id}"
+        text = f"TagSense  {family}  id {tag_id}"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
         cv2.putText(caption, text, ((img.shape[1] - tw) // 2, (caption.shape[0] + th) // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, scale, 150, 1, cv2.LINE_AA)
@@ -70,7 +71,8 @@ def black_rects(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
     return rects
 
 
-def tag_svg(tag_id: int, size_mm: float = 100.0, quiet: bool = True) -> bytes:
+def tag_svg(tag_id: int, size_mm: float = 100.0, quiet: bool = True,
+            family: str = DEFAULT_FAMILY) -> bytes:
     """SVG in millimetres. `size_mm` is the black square's edge length.
 
     Two non-overlapping shapes: #black (the tag) and #white (the inner white
@@ -78,10 +80,12 @@ def tag_svg(tag_id: int, size_mm: float = 100.0, quiet: bool = True) -> bytes:
     filament, or a cutter can use just the black layer.
     """
     size_mm = max(5.0, min(float(size_mm), 1000.0))
-    cell = size_mm / CELLS
+    grid = tag_grid(tag_id, family)
+    cells = grid.shape[0]
+    cell = size_mm / cells
     margin = 1 if quiet else 0
-    total = (CELLS + 2 * margin) * cell
-    rects = black_rects(tag_grid(tag_id))
+    total = (cells + 2 * margin) * cell
+    rects = black_rects(grid)
 
     def r(v: float) -> str:
         return f"{v:.3f}".rstrip("0").rstrip(".")
@@ -96,7 +100,7 @@ def tag_svg(tag_id: int, size_mm: float = 100.0, quiet: bool = True) -> bytes:
     return (f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{t}mm" height="{t}mm" '
             f'viewBox="0 0 {t} {t}">\n'
-            f'  <title>TagSense tag16h5 id {tag_id}, {r(size_mm)} mm'
+            f'  <title>TagSense {family} id {tag_id}, {r(size_mm)} mm'
             f'{" with quiet zone" if quiet else ""}</title>\n'
             f'  <path id="white" fill="#ffffff" fill-rule="evenodd" d="{white}"/>\n'
             f'  <path id="black" fill="#000000" d="{black}"/>\n'

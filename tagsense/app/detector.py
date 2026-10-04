@@ -1,9 +1,10 @@
-"""AprilTag (tag16h5) detection on a normalised crop of a camera frame.
+"""AprilTag detection on a normalised crop of a camera frame.
 
 Pure OpenCV: no HA or MQTT imports. Parameters are the ones that won the
-tuning sweep (see the handover spec, section 5). Do not add the
-adaptiveThreshWinSize*, minMarkerPerimeterRate or polygonalApproxAccuracyRate
-tweaks: they produced a phantom ID in full-frame tests.
+tuning sweep for tag16h5 (see SPEC.md, "Detector tuning"); the other families
+use the same parameters untuned. Do not add the adaptiveThreshWinSize*,
+minMarkerPerimeterRate or polygonalApproxAccuracyRate tweaks: they produced a
+phantom ID in full-frame tests.
 """
 from __future__ import annotations
 
@@ -24,6 +25,36 @@ UPSCALE = 2
 DEFAULT_MAX_ASPECT = 2.0
 
 Crop = tuple[float, float, float, float]
+
+# AprilTag families in OpenCV's aruco module. tag16h5 is the only tuned one.
+DEFAULT_FAMILY = "tag16h5"
+FAMILIES = {
+    "tag16h5": aruco.DICT_APRILTAG_16h5,
+    "tag25h9": aruco.DICT_APRILTAG_25h9,
+    "tag36h10": aruco.DICT_APRILTAG_36h10,
+    "tag36h11": aruco.DICT_APRILTAG_36h11,
+}
+
+
+@dataclass(frozen=True)
+class FamilyInfo:
+    name: str
+    dictionary: aruco.Dictionary
+    id_count: int       # valid ids are 0 .. id_count-1
+    cells: int          # data grid plus the 1-cell black border each side
+
+
+_FAMILY_CACHE: dict[str, FamilyInfo] = {}
+
+
+def family_info(name: str = DEFAULT_FAMILY) -> FamilyInfo:
+    """Dictionary, id count and grid size, read from OpenCV (never hard-coded)."""
+    if name not in FAMILIES:
+        raise ValueError(f"unknown tag family {name!r}: choose one of {', '.join(FAMILIES)}")
+    if name not in _FAMILY_CACHE:
+        d = aruco.getPredefinedDictionary(FAMILIES[name])
+        _FAMILY_CACHE[name] = FamilyInfo(name, d, int(d.bytesList.shape[0]), int(d.markerSize) + 2)
+    return _FAMILY_CACHE[name]
 
 
 def build_params() -> aruco.DetectorParameters:
@@ -73,7 +104,7 @@ def quad_aspect(corners: np.ndarray) -> float:
 
 @dataclass
 class Phantom:
-    """A decode that does not count: another tag16h5 ID (ignored: no object on
+    """A decode that does not count: another ID of the family (ignored: no object on
     this camera uses it, so most likely a phantom), or the target ID rejected
     by the shape gate."""
     id: int
@@ -155,11 +186,12 @@ class Detection:
 
 
 class Detector:
-    def __init__(self, tag_id: int = 5, max_aspect: float = DEFAULT_MAX_ASPECT):
+    def __init__(self, tag_id: int = 5, max_aspect: float = DEFAULT_MAX_ASPECT,
+                 family: str = DEFAULT_FAMILY, params: aruco.DetectorParameters | None = None):
         self.tag_id = int(tag_id)
         self.max_aspect = float(max_aspect)   # 0 disables the shape gate
-        self._det = aruco.ArucoDetector(
-            aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_16h5), build_params())
+        self.family = family_info(family)
+        self._det = aruco.ArucoDetector(self.family.dictionary, params or build_params())
 
     def detect(self, bgr: np.ndarray, crop: Crop = DEFAULT_CROP) -> Detection:
         t0 = time.perf_counter()

@@ -90,14 +90,14 @@ class TrackedObject:
         self.settings_path = os.path.join(d, "settings.json")
         self.state_path = os.path.join(d, "state.json")
         self.reference_path = os.path.join(d, "reference.json")
-        self.detector = Detector(oc.tag_id, tuning.max_aspect)
+        self.detector = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family)
         self.settings = Settings.load(self.settings_path)
         self.decision = dec.Decision.load(self.state_path)
         self.reference = Reference.load(self.reference_path)
         self.sched = Scheduler(time.monotonic(), self.settings.poll_interval,
                                tuning.confirm_delay_s, self.settings.enabled)
         self.camera = None                  # CameraWorker, set by the app
-        self.known_ids: set[int] = set()   # other objects' tags on this camera: not phantoms
+        self.known_ids: set[int] = set()   # other objects' tags (same family) on this camera
         self.last_phantom: dict | None = None
         # For the web UI
         self.history: deque[dict] = deque(maxlen=HISTORY_LEN)
