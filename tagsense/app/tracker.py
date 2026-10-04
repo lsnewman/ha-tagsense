@@ -17,13 +17,16 @@ from datetime import datetime, timezone
 import numpy as np
 
 from . import decision as dec
-from .analysis import analyse_image
-from .detector import Detector, Phantom, annotate, validate_crop
+from .analysis import FrameResult, analyse_image
+from .checklog import CheckLog
+from .detector import Detector, Phantom, annotate, quad_aspect, validate_crop
+from .ha_notify import Notifier
 from .mqtt_ha import ObjectPublisher, fmt
 from .objects import ObjectConfig, object_dir
-from .reference import Reference
+from .reference import MIN_HITS, Reference
 from .scheduler import MANUAL, Scheduler
 from .settings import Settings
+from .snapshots import Snapshots
 from .sources import Frame
 
 log = logging.getLogger("tagsense")
@@ -69,12 +72,14 @@ class Tuning:
 
 class TrackedObject:
     def __init__(self, oc: ObjectConfig, tuning: Tuning, data_dir: str,
-                 publisher: ObjectPublisher, cond: threading.Condition):
+                 publisher: ObjectPublisher, cond: threading.Condition,
+                 notifier: Notifier | None = None):
         self.oc = oc
         self.tuning = tuning
         self.cfg = tuning.cfg
         self.pub = publisher
         self.cond = cond
+        self.notifier = notifier or Notifier()
         d = object_dir(data_dir, oc.id)
         self.settings_path = os.path.join(d, "settings.json")
         self.state_path = os.path.join(d, "state.json")
@@ -96,6 +101,15 @@ class TrackedObject:
         self.last_diag: dict = {}
         self.last_presence_attrs: dict = {}
         self.last_status_attrs: dict = {}
+        self.snapshots = Snapshots(os.path.join(d, "snapshots"))
+        self.checklog = CheckLog(os.path.join(d, "checks.jsonl"))
+        # Rejection alert: reasons from the latest check with rejected target reads,
+        # and the message last sent to HA ("?" = maybe one left from before a restart).
+        self.last_reject_reasons: list[str] = []
+        self._notified: str | None = "?" if self.decision.reject_streak >= dec.ALERT_AFTER else None
+        # Per-burst analysis, filled frame by frame by the camera worker
+        self._burst_crop = None
+        self._results: list[FrameResult] | None = None
 
     @property
     def id(self) -> str:
@@ -108,7 +122,7 @@ class TrackedObject:
         return {"poll_interval": s.poll_interval, "crop_x1": s.crop_x1, "crop_y1": s.crop_y1,
                 "crop_x2": s.crop_x2, "crop_y2": s.crop_y2, "enabled": s.enabled}
 
-    def on_setting(self, key: str, value: str):
+    def on_setting(self, key: str, value: str, from_api: bool = False):
         with self.cond:
             changed = self.settings.set(key, value)
             if changed:
@@ -122,9 +136,11 @@ class TrackedObject:
                     self._publish_state_locked()
                 self.cond.notify_all()
             stored = getattr(self.settings, key)
-        # Echo the stored (possibly clamped) value; overwrite a rejected retained command.
+        # Echo the stored (possibly clamped) value. Overwrite the retained command
+        # if it was rejected, or if the change came from the panel: otherwise the
+        # old retained command is replayed (and briefly applied) on the next start.
         self.pub.publish_setting(key, stored)
-        if fmt(stored) != value:
+        if from_api or fmt(stored) != value:
             self.pub.pub(self.pub.t.set(key), fmt(stored))
 
     def on_check_now(self):
@@ -135,6 +151,18 @@ class TrackedObject:
             log.info("[%s] check requested", self.id)
             self.sched.request(MANUAL)
             self.cond.notify_all()
+
+    def reset_reference(self):
+        """Forget the learned usual position and size (the object has moved).
+        The size gate and geometry warnings stay off until MIN_HITS new hits."""
+        with self.cond:
+            self.reference = Reference()
+            self.reference.save(self.reference_path)
+            self.decision.reject_streak = 0
+            self.decision.save(self.state_path)
+            self._publish_state_locked()
+        log.info("[%s] learned position reset", self.id)
+        self._sync_alert()
 
     def request(self, trigger: str):
         with self.cond:
@@ -157,6 +185,64 @@ class TrackedObject:
         self.pub.publish_state(value, reason, self.last_presence_attrs,
                                {**self.last_status_attrs, "miss_streak": self.decision.miss_streak,
                                 "last_seen": iso(self.decision.last_seen_ts)})
+        self.pub.publish_problem(self._alert_locked())
+
+    # --- rejection alert --------------------------------------------------
+
+    def _alert_locked(self) -> dict | None:
+        """The target was read but rejected in ALERT_AFTER checks in a row."""
+        streak = self.decision.reject_streak
+        if streak < dec.ALERT_AFTER or not self.settings.enabled:
+            return None
+        reasons = self.last_reject_reasons
+        size = any(r.startswith("size") for r in reasons)
+        aspect = any(r.startswith("aspect") for r in reasons)
+        t, name = self.tuning, self.oc.name
+        msg = [f"Tag {self.oc.tag_id} was read in {dec.ALERT_AFTER} or more checks in a row, "
+               "but every read was rejected by the shape gate, so they count as misses "
+               f"({name} is reported absent once enough of them add up)."]
+        if size:
+            msg.append(f"Too small: under {t.min_size_ratio:.0%} of its learned usual size.")
+        if aspect:
+            msg.append(f"Too skewed: aspect above max_aspect {t.max_aspect:g}.")
+        if not (size or aspect):
+            msg.append("See the TagSense panel for the reason.")
+        msg.append(f"If {name} is not there, these are phantom reads and nothing needs "
+                   f"changing. If {name} is actually there,")
+        if size:
+            msg.append("it has probably moved further from the camera: press Reset learned "
+                       "position in the TagSense panel (or on its device in HA), or lower "
+                       "min_size_ratio in the app options (0 = off).")
+        if aspect:
+            msg.append(("If the tag is also" if size else "the tag is probably") + " seen at a "
+                       "steeper angle now: raise max_aspect in the app options.")
+        if not (size or aspect):
+            msg.append("check the crop and the tag.")
+        return {"reason": "size" if size and not aspect else "aspect" if aspect and not size
+                else "size_and_aspect" if size else "unknown",
+                "checks": streak, "detail": "; ".join(reasons) or None, "message": " ".join(msg)}
+
+    def _sync_alert(self):
+        """Raise, update or dismiss the HA notification (call without the lock)."""
+        with self.cond:
+            alert = self._alert_locked()
+        msg = alert["message"] if alert else None
+        if msg == self._notified:
+            return
+        nid = f"tagsense_{self.id}_rejected"
+        if msg:
+            log.warning("[%s] alert: %s", self.id, msg)
+            self.notifier.notify(nid, f"TagSense: {self.oc.name}", msg)
+        else:
+            log.info("[%s] alert cleared", self.id)
+            self.notifier.dismiss(nid)
+        self._notified = msg
+
+    def dismiss_alert(self):
+        """The object is being deleted."""
+        if self._notified is not None:
+            self.notifier.dismiss(f"tagsense_{self.id}_rejected")
+            self._notified = None
 
     # --- worker-driven ----------------------------------------------------
 
@@ -165,22 +251,45 @@ class TrackedObject:
         raw = (s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2)
         return s.crop, raw
 
-    def process(self, trigger: str, burst: Burst):
+    def begin_burst(self):
+        """The camera worker is starting a burst: analyse it frame by frame."""
         with self.cond:
-            crop, raw_crop = self.crop()
+            self._burst_crop = self.crop()
+        self._results = []
+
+    def analyse_frame(self, img: np.ndarray | None) -> FrameResult:
         t = self.tuning
-        results = [analyse_image(img, self.detector, crop, t.sanity_min_ratio, t.sanity_min_h)
-                   for img in burst.images]
-        self._size_gate(results)
+        r = analyse_image(img, self.detector, self._burst_crop[0], t.sanity_min_ratio, t.sanity_min_h)
+        self._size_gate(r)
+        self._results.append(r)
+        return r
+
+    def satisfied(self) -> bool:
+        """Early burst exit: already present and the first present_min_hits
+        frames all hit, so the rest of the burst cannot change anything."""
+        rs = self._results or []
+        with self.cond:
+            present = self.decision.state == dec.PRESENT
+        return present and len(rs) >= self.cfg.present_min_hits and all(r.hit for r in rs)
+
+    def process(self, trigger: str, burst: Burst):
+        results, self._results = self._results, None
+        if results is None or len(results) != len(burst.images):
+            self.begin_burst()       # not analysed while fetching: do it now
+            results = [self.analyse_frame(img) for img in burst.images]
+            self._results = None
+        crop, raw_crop = self._burst_crop
         frames = burst.frames
         valid = [r for r in results if r.valid]
         hits = [r for r in results if r.hit]
+        decoded = [r for r in results if r.det is not None]
+        rejected_frames = [r for r in decoded if any(p.rejected_target for p in r.det.others)]
         attempted = burst.attempted
         res = dec.CheckResult(frames=attempted or burst.requested, fetch_failures=burst.failures,
-                              valid=len(valid), hits=len(hits))
+                              valid=len(valid), hits=len(hits), rejected=len(rejected_frames))
 
-        decoded = [r for r in results if r.det is not None]
         best = max(hits, key=lambda r: r.det.size_px) if hits else None
+        aspect = max(quad_aspect(r.det.corners) for r in hits) if hits else None
         image_src = best or (decoded[-1] if decoded else None)
         warnings = []
         if validate_crop(raw_crop) != tuple(raw_crop):
@@ -197,7 +306,7 @@ class TrackedObject:
             if ph.rejected_target:
                 log.warning("[%s] shape gate: %s", self.id, ph.describe())
             else:
-                log.info("[%s] phantom candidate: %s", self.id, ph.describe())
+                log.info("[%s] ignored decode: %s", self.id, ph.describe())
         if rejected := [ph for ph in phantoms if ph.rejected_target]:
             warnings.append(f"tag id {self.detector.tag_id} decode rejected by shape gate: "
                             + "; ".join(sorted({ph.reason for ph in rejected})))
@@ -208,8 +317,11 @@ class TrackedObject:
                                  "detail": phantoms[0].describe()}
 
         with self.cond:
+            before, _ = self.decision.reported(self.cfg, self.settings.enabled)
             outcome = self.decision.update(res, self.cfg, now, self.settings.poll_interval)
             self.decision.save(self.state_path)
+            if rejected:
+                self.last_reject_reasons = sorted({ph.reason for ph in rejected})
             self.sched.on_result(trigger, outcome, self.decision.miss_streak,
                                  self.cfg.absent_checks, time.monotonic())
             value, reason = self.decision.reported(self.cfg, self.settings.enabled)
@@ -219,7 +331,7 @@ class TrackedObject:
                 self.last_presence_attrs = {
                     "last_seen": iso(self.decision.last_seen_ts), "size_px": round(d.size_px, 1),
                     "centre": [round(v, 4) for v in d.centre_norm], "area_px": round(d.area_px),
-                    "tag_id": self.oc.tag_id, "source": src}
+                    "aspect": round(aspect, 2), "tag_id": self.oc.tag_id, "source": src}
             else:
                 self.last_presence_attrs = {**self.last_presence_attrs,
                                             "last_seen": iso(self.decision.last_seen_ts)}
@@ -229,7 +341,6 @@ class TrackedObject:
             self.last_diag = {
                 "last_source": ",".join(sorted({f.source for f in frames})) or None,
                 "resolution": image_src.check.resolution if image_src else None,
-                "last_check": iso(now),
                 "last_error": burst.last_error,
                 "warning": "; ".join(warnings) or None,
                 "fetch_ms": _mean([f.fetch_ms for f in frames]),
@@ -238,6 +349,7 @@ class TrackedObject:
                 "discard_rate": 100.0 * (attempted - len(valid)) / attempted if attempted else None,
                 "unique_frames": len(burst.hashes),
                 "tag_size_px": best.det.size_px if best else None,
+                "tag_aspect": aspect,
                 "sanity_ratio": _mean([r.check.ratio for r in decoded]),
                 "phantom_decodes": len(phantoms),
                 "miss_streak": self.decision.miss_streak,
@@ -261,34 +373,42 @@ class TrackedObject:
             self.history.appendleft({
                 "at": iso(now), "trigger": trigger, "outcome": outcome, "frames": attempted,
                 "valid": len(valid), "hits": len(hits), "reported": value, "reason": reason,
+                "aspect": round(aspect, 2) if aspect else None,
                 "warning": self.last_diag["warning"],
                 "phantoms": [p.describe() for p in phantoms]})
+            crop_std = self.last_diag["crop_std"]
+            self.checklog.append({
+                "t": round(now, 1), "hits": len(hits), "valid": len(valid), "frames": attempted,
+                "contrast": round(crop_std, 1) if crop_std is not None else None,
+                "aspect": round(aspect, 2) if aspect else None,
+                "outcome": outcome, "reported": value})
+        jpeg = None
         if image_src is not None:
             jpeg = annotate(image_src.check.bgr, image_src.det, phantoms)
             self.last_jpeg = jpeg
             if phantoms:
                 self.last_phantom_jpeg = jpeg
             self.pub.publish_image(jpeg)
+        if value != before:
+            self.snapshots.add(iso(now), now, before, value, reason, jpeg)
+        self._sync_alert()
         log.info("[%s] check %s: %d/%d valid, %d hits, %d fetch failures -> %s; reported %s (%s), "
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
                  outcome, value, reason, self.decision.miss_streak)
         return outcome
 
-    def _size_gate(self, results):
-        """Shape gate, part 2: reject target decodes far smaller than the learned
-        usual size (phantoms in texture decode tiny). Off until 10 hits are learned."""
+    def _size_gate(self, r: FrameResult):
+        """Shape gate, part 2: reject a target decode far smaller than the learned
+        usual size (phantoms in texture decode tiny). Off until MIN_HITS are learned."""
         ref, limit = self.reference, self.tuning.min_size_ratio
-        if limit <= 0 or not ref.ready or ref.size <= 0:
+        d = r.det
+        if limit <= 0 or not ref.ready or ref.size <= 0 or d is None or not d.found:
             return
-        for r in results:
-            d = r.det
-            if d is None or not d.found:
-                continue
-            ratio = (d.size_px / d.frame_wh[1]) / ref.size
-            if ratio < limit:
-                d.others.append(Phantom(d.tag_id, d.corners, d.frame_wh, rejected_target=True,
-                                        reason=f"size {ratio:.0%} of usual < {limit:.0%}"))
-                d.found, d.corners = False, None
+        ratio = (d.size_px / d.frame_wh[1]) / ref.size
+        if ratio < limit:
+            d.others.append(Phantom(d.tag_id, d.corners, d.frame_wh, rejected_target=True,
+                                    reason=f"size {ratio:.0%} of usual < {limit:.0%}"))
+            d.found, d.corners = False, None
 
     # --- web UI -----------------------------------------------------------
 
@@ -303,7 +423,10 @@ class TrackedObject:
                 "miss_streak": self.decision.miss_streak,
                 "settings": self.settings_values(),
                 "reference": self.reference.as_attrs()
-                | {"centre": [self.reference.cx, self.reference.cy] if self.reference.hits else None},
+                | {"centre": [self.reference.cx, self.reference.cy] if self.reference.hits else None,
+                   "size": self.reference.size if self.reference.hits else None,
+                   "min_hits": MIN_HITS},
+                "alert": self._alert_locked(),
                 "last_corners": self.last_corners,
                 "diag": self.last_diag,
                 "last_phantom": self.last_phantom,
@@ -314,3 +437,7 @@ class TrackedObject:
     def history_list(self) -> list[dict]:
         with self.cond:
             return list(self.history)
+
+    def chart_points(self) -> list[dict]:
+        with self.cond:
+            return self.checklog.points()

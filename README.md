@@ -32,13 +32,19 @@ it either finds your specific tag or it doesn't.
    AprilTag (`tag16h5`) detector. Decodes with an implausible shape are
    rejected: too elongated (`max_aspect`) or far smaller than usual
    (`min_size_ratio`). Decodes of other tag IDs are ignored, but
-   logged and drawn on the debug image as "phantoms".
+   logged and drawn on the debug image as `ignored: id N`.
 4. **Decide, with debounce.**
    - Seeing the tag is strong evidence, so **present** is reported straight
      away.
    - Not seeing it is weak evidence (glare, darkness, a person in the way),
      so **absent** is only reported after several clean misses in a row.
    - Checks that fail to get frames lead to **unknown**, never absent.
+   - Reads rejected by the shape gate count as misses. If that happens in
+     three checks in a row, an alert explains why, in case the real tag is
+     being rejected.
+   - When the object is already present and the first frames all hit, the
+     rest of the burst is skipped, so most checks fetch only
+     `present_min_hits` frames.
 
 Checks run on a timer, on demand from a **Check now** button, or both. Pressing
 Check now when the object has just been moved triggers a short series of
@@ -48,7 +54,7 @@ than after several polls.
 ## Requirements
 
 - Home Assistant OS or Supervised (apps need the Supervisor). Built for
-  **amd64**.
+  **amd64** and **aarch64** (Raspberry Pi 4/5).
 - The **Mosquitto broker** app with the MQTT integration. TagSense gets the
   broker login from the Supervisor automatically.
 - A camera that can see the tag, available as either:
@@ -89,12 +95,23 @@ logged-in Home Assistant users can open it.
   search area drawn as a box. Drag it to move it, drag a corner to resize it,
   or drag on the image to draw a new box. The last detection (green) and the
   learned usual position (cyan) are drawn on the frame, so you can see where
-  the tag actually is. Saving runs a check straight away.
+  the tag actually is. **Fit to tag** sets the box to the learned position
+  plus 3x the tag size on each side. Saving runs a check straight away.
 - **Settings:** Enabled and Poll interval. These are the same settings as the
   MQTT entities, so changes show up in both places.
 - **Recent checks:** the last 50 checks since the app started (trigger,
-  result, hits, what was reported, warnings and phantom reads), plus the last
-  phantom read with its image.
+  result, hits, tag aspect, what was reported, warnings, and ignored or
+  rejected reads), plus the last ignored or rejected read with its image.
+- **Last 24 hours:** a chart of the hit rate, crop contrast and tag aspect
+  (against `max_aspect`) in 10-minute steps, over a band showing the reported
+  state. It is kept across restarts. Hover for the details of each step.
+- **State changes:** the checked image each time the reported state changed
+  (the last 20 are kept).
+- **Tag rejected banner:** shown when the tag was read but rejected in 3
+  checks in a row, with the reason and a **Reset learned position** button.
+- **Export / import** (overview page): all objects and their settings as
+  text, for a backup or another install. Importing adds new objects and
+  updates ones with the same ID, and never deletes.
 - **Diagnostics:** fetch and detect times, discard rate, sanity ratio, crop
   brightness and contrast, fetch errors, and how much position data has been
   learned.
@@ -147,11 +164,7 @@ Objects are managed in the TagSense panel and stored by the app in
 Objects on the same stream (or camera entity) share one camera worker: each
 burst is fetched once and judged by all of them, each with its own crop and
 tag. Different cameras are checked in parallel. The other objects' tags on a
-shared camera are recognised, so they are not logged as phantoms.
-
-The app's `objects` option (on the Configuration tab) is only read once, on
-the first start of 0.4.0 or later, to import existing objects into the panel.
-After that it is ignored.
+shared camera are recognised, so they are not logged as ignored reads.
 
 ## Configuration (app options)
 
@@ -193,7 +206,7 @@ take effect when the app restarts.
 
 | Option | Default | What it does |
 |---|---|---|
-| `log_level` | `info` | `debug`, `info`, `warning` or `error`. At `info` there is one line per check, plus one per phantom decode. |
+| `log_level` | `info` | `debug`, `info`, `warning` or `error`. At `info` there is one line per check, plus one per ignored or rejected decode. |
 | `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | *(unset)* | Only needed to use a broker other than the Supervisor's Mosquitto. Leave them unset otherwise. |
 
 ## Settings you can change live (entities)
@@ -208,6 +221,7 @@ stored by the app so they survive restarts.
 | **Crop x1 / y1 / x2 / y2** | `0.65 / 0.45 / 1.0 / 1.0` | The part of the frame that is searched, as fractions of width and height (0 = left/top, 1 = right/bottom). The default is the bottom-right area of the development camera, so **set it for your scene**: the panel's search area editor is the easiest way. `0 / 0 / 1 / 1` searches the whole frame (slower). It must cover **every** spot where the object might be. A tighter crop is faster and has fewer places for phantoms to appear, but if it is too tight, an object moved slightly reads as absent. If x2 ≤ x1 or y2 ≤ y1, the default is used and a warning is raised. |
 | **Enabled** | on | Off pauses all checks. The main sensor goes unavailable and Status shows `unknown` with reason `disabled`. |
 | **Check now** | — | Runs a check immediately. It is intended for automations, for example when Frigate sees a person leave the area. |
+| **Reset learned position** | — | Forgets the learned usual size and position. Use it after moving the object, e.g. further from the camera. The size gate and position warnings stay off until 10 new hits are learned. |
 
 **Tuning the crop:** change a crop value, press **Check now**, and look at the
 **Last crop** image. The tag is outlined in green, and any phantoms or rejected
@@ -223,8 +237,9 @@ below. Entity IDs follow the device, for example `binary_sensor.tagsense_bin`,
 |---|---|
 | **TagSense `<name>`** (`binary_sensor`, occupancy) | `on` = present, `off` = absent. **Unavailable** when the state is unknown, when TagSense is disabled, or when the app is not running. Attributes: `last_seen`, `size_px`, `centre`, `area_px`, `tag_id`, `source`. |
 | **Status** (enum sensor) | `present`, `absent` or `unknown`, plus a `reason` attribute: `starting`, `restored`, `tag_seen`, `inconclusive`, `pending`, `no_tag`, `fetch_failed`, `all_frames_invalid`, `disabled`. The other attributes describe the last check: frames, valid, hits, and the trigger (`startup`, `poll`, `manual`, `confirm`, or `shared` when another object on the same camera requested the burst). |
-| **Last crop** (image) | The latest crop with annotations. Green: the tag, with its ID, size and a red dot on corner 0. Orange: phantom or rejected decodes. |
-| Diagnostics | Last source, frame resolution, last check, last error, warning, fetch time, detect time, fetch failures, discard rate, unique frames, phantom decodes, tag size, sanity ratio, miss streak, crop brightness, crop contrast. |
+| **Tag rejected** (`binary_sensor`, problem) | On after 3 checks in a row in which the tag was read but every read was rejected by the shape gate (those checks count as misses). A Home Assistant notification with the reason (too small or too skewed), and what to change if the object really is there, appears at the same time. Both clear by themselves after a check without rejected reads. |
+| **Last crop** (image) | The latest crop with annotations. Green: the tag, with its ID, size and a red dot on corner 0. Orange: ignored reads of other IDs and rejected reads. |
+| Diagnostics | Last source, frame resolution, last error, warning, fetch time, detect time, fetch failures, discard rate, unique frames, discarded decodes, tag size, tag aspect, sanity ratio, miss streak, crop brightness, crop contrast. |
 
 Some diagnostics need a little explanation:
 - **Warning** is set when the tag is found at an unusual size or position
@@ -235,8 +250,12 @@ Some diagnostics need a little explanation:
   it.
 - **Unique frames** lower than the burst size means the source served the same
   frame more than once.
-- **Phantom decodes** counts decodes of other IDs in the latest check. Its
-  attributes show where they were, and the most recent one ever seen.
+- **Discarded decodes** counts the ignored reads of other IDs and the
+  rejected reads of the object's own tag in the latest check. Its attributes
+  show where they were, and the most recent one ever seen.
+- **Tag aspect** is the worst edge ratio of the accepted reads in the latest
+  check. Its history (day and night) shows how close the real tag comes to
+  `max_aspect`.
 - **Crop brightness / contrast** help explain misses at night.
 
 **Learned reference:** TagSense learns where your tag usually appears, and how
@@ -250,10 +269,12 @@ learned.
 
 ## Upgrading
 
-- **From 0.3.x:** on first start, the objects in the `objects` option are
-  imported into the panel. Entities, state and settings carry over unchanged.
-  From then on, manage objects in the panel. The option is ignored, and can
-  be cleared.
+- **To 0.4.2:** the *Last check* sensor is removed (it wrote to the logbook on
+  every check; the time is still the `last_check` attribute of *Status*), and
+  *Phantom decodes* is renamed *Discarded decodes* with the same entity ID.
+- **From 0.3.x:** install 0.4.1 first, so the objects in the old `objects`
+  option are imported into the panel (0.4.2 no longer has that option), or
+  add them again in the panel.
 - **From 0.2.x or earlier:** install 0.3.x first, so its migration runs.
   0.4.0 no longer reads the old single-object options.
 

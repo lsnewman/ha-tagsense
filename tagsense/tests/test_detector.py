@@ -65,7 +65,7 @@ def test_phantom_ids_kept_with_geometry_and_drawn():
     assert det.found and det.other_ids == [16]
     ph = det.others[0]
     assert np.allclose(ph.centre_norm, (1500 / 1920, 700 / 1080), atol=0.003)
-    assert ph.describe().startswith("phantom id 16 at (0.78")
+    assert ph.describe().startswith("ignored: id 16 (not this object's tag) at (0.78")
     jpg = annotate(frame, det)
     assert jpg[:2] == b"\xff\xd8"
 

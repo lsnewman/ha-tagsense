@@ -13,6 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from .mqtt_ha import SETTING_KEYS
 from .objects import ConfigError, ObjectConfig, parse_one, slugify, unique_id
 from .sources import FetchError, list_go2rtc_streams, list_ha_cameras
 from .tagprint import tag_png, tag_svg
@@ -44,8 +45,10 @@ class Api:
         return o
 
     def state(self) -> dict:
+        t = self.app.tuning
         return {"version": os.environ.get("TAGSENSE_VERSION", "dev"),
                 "go2rtc_configured": bool(self.app.opts.get("go2rtc_url")),
+                "max_aspect": t.max_aspect, "min_size_ratio": t.min_size_ratio,
                 "objects": [o.status() for o in self.app.objects.values()]}
 
     def sources(self) -> dict:
@@ -96,7 +99,7 @@ class Api:
                 raise ApiError(400, f"unknown setting {key!r}")
             if isinstance(value, bool):
                 value = "ON" if value else "OFF"
-            o.on_setting(key, str(value))
+            o.on_setting(key, str(value), from_api=True)
         return o.settings_values()
 
     def check(self, oid: str) -> dict:
@@ -106,8 +109,78 @@ class Api:
         o.on_check_now()
         return {"requested": oid}
 
+    def reset_reference(self, oid: str) -> dict:
+        self._obj(oid).reset_reference()
+        return {"reset": oid}
+
     def history(self, oid: str) -> list:
         return self._obj(oid).history_list()
+
+    def chart(self, oid: str) -> list:
+        return self._obj(oid).chart_points()
+
+    def snapshots(self, oid: str) -> list:
+        return self._obj(oid).snapshots.list()
+
+    def snapshot(self, oid: str, name: str) -> bytes:
+        data = self._obj(oid).snapshots.read(name)
+        if not data:
+            raise ApiError(404, "no such snapshot")
+        return data
+
+    # --- export / import --------------------------------------------------
+
+    def export(self) -> dict:
+        out = []
+        for c in self.app.configs:
+            entry = c.to_dict()
+            if o := self.app.objects.get(c.id):
+                with o.cond:
+                    entry["settings"] = o.settings_values()
+            out.append(entry)
+        return {"tagsense": 1, "objects": out}
+
+    def import_(self, body: dict) -> dict:
+        """Add or update objects by id; objects not in the import are kept."""
+        data = body
+        if "text" in body:
+            try:
+                data = json.loads(body["text"])
+            except ValueError as e:
+                raise ApiError(400, f"not valid JSON: {e}") from None
+        entries = data.get("objects") if isinstance(data, dict) else data
+        if not isinstance(entries, list) or not entries:
+            raise ApiError(400, "expected a list of objects (as exported)")
+        configs = list(self.app.configs)
+        by_id = {c.id: i for i, c in enumerate(configs)}
+        added, updated, settings = [], [], {}
+        for n, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ApiError(400, f"objects[{n}]: expected an object")
+            raw = {k: entry.get(k) for k in ("id", *CONFIG_FIELDS)}
+            try:
+                oc = parse_one(raw, f"objects[{n}]")
+            except ConfigError as e:
+                raise ApiError(400, str(e)) from None
+            if oc.id in by_id:
+                if configs[by_id[oc.id]] != oc:
+                    configs[by_id[oc.id]] = oc
+                updated.append(oc.id)
+            else:
+                by_id[oc.id] = len(configs)
+                configs.append(oc)
+                added.append(oc.id)
+            if isinstance(entry.get("settings"), dict):
+                settings[oc.id] = entry["settings"]
+        for oid, values in settings.items():      # check before changing anything
+            if unknown := set(values) - set(SETTING_KEYS):
+                raise ApiError(400, f"{oid}: unknown setting(s) {sorted(unknown)}")
+        if configs != self.app.configs:
+            self._apply(configs)
+        for oid, values in settings.items():
+            self.settings(oid, values)
+        log.info("imported objects: added %s, updated %s", added or "none", updated or "none")
+        return {"added": added, "updated": updated}
 
     def frame(self, oid: str, max_age_s: float) -> bytes:
         try:
@@ -143,7 +216,13 @@ ROUTES = [
     ("DELETE", r"/api/objects/(?P<oid>[a-z0-9_]+)", "delete"),
     ("PATCH", r"/api/objects/(?P<oid>[a-z0-9_]+)/settings", "settings"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/check", "check"),
+    ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/reset_reference", "reset_reference"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/history", "history"),
+    ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/chart", "chart"),
+    ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots", "snapshots"),
+    ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots/(?P<name>\d+)\.jpg", "snapshot"),
+    ("GET", r"/api/export", "export"),
+    ("POST", r"/api/import", "import_"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/frame\.jpg", "frame"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/(?P<kind>last|phantom)\.jpg", "image"),
     ("GET", r"/api/tag/(?P<tag>\d+)\.(?P<fmt>png|svg)", "tag"),
@@ -221,8 +300,10 @@ def make_handler(api: Api, allow_all: bool):
                     return self._send(200, api.frame(kw["oid"], age), "image/jpeg")
                 if name == "image":
                     return self._send(200, api.image(kw["oid"], kw["kind"]), "image/jpeg")
+                if name == "snapshot":
+                    return self._send(200, api.snapshot(kw["oid"], kw["name"]), "image/jpeg", cache=True)
                 args = list(kw.values())
-                if method in ("POST", "PUT", "PATCH") and name != "check":
+                if method in ("POST", "PUT", "PATCH") and name not in ("check", "reset_reference"):
                     args.append(self._body())
                 return self._json(200, getattr(api, name)(*args))
             except ApiError as e:

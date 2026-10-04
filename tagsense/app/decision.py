@@ -8,7 +8,10 @@ Per check (one burst of frames):
   hits == 0                   -> MISS: streak += 1 (after expiry); absent once
                                  the streak reaches absent_checks
 
-A bad or missing frame never moves the state towards absent.
+A bad or missing frame never moves the state towards absent. A read of the
+target that the shape gate rejected is not the tag, so it is a miss too; it
+also counts towards reject_streak, which raises an alert at ALERT_AFTER (the
+gate may be rejecting the real tag, or a repeating phantom is being read).
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ R_FETCH_FAILED = "fetch_failed"
 R_ALL_INVALID = "all_frames_invalid"
 
 MIN_STREAK_EXPIRY_S = 300.0
+ALERT_AFTER = 3                  # consecutive misses with rejected target reads
 
 
 @dataclass
@@ -40,6 +44,7 @@ class CheckResult:
     fetch_failures: int
     valid: int
     hits: int
+    rejected: int = 0     # frames whose target read the shape gate rejected
 
 
 @dataclass
@@ -65,6 +70,7 @@ class Decision:
     failure_reason: str | None = None
     last_seen_ts: float | None = None
     last_check_ts: float | None = None
+    reject_streak: int = 0
 
     def update(self, r: CheckResult, cfg: Config, now: float, poll_interval: float) -> str:
         self.last_check_ts = now
@@ -76,6 +82,8 @@ class Decision:
 
         self.failed_checks = 0
         self.failure_reason = None
+
+        self.reject_streak = self.reject_streak + 1 if r.hits == 0 and r.rejected > 0 else 0
 
         if r.hits >= cfg.present_min_hits:
             self.state, self.reason = PRESENT, R_TAG_SEEN

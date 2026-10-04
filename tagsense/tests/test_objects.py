@@ -73,17 +73,16 @@ def test_fallback():
         parse_list([obj(), obj(name="B", fallback=True, camera_entity="camera.x")])
 
 
-def test_store_imports_options_once(tmp_path):
+def test_store_save_and_load(tmp_path):
     store = ObjectStore(str(tmp_path))
-    objs = store.load_or_import([obj()])
-    assert [o.id for o in objs] == ["bin"]
+    assert store.load_or_empty() == []
+    store.save(parse_list([obj()]))
     assert json.loads((tmp_path / "objects.json").read_text())[0]["go2rtc_stream"] == "cam1"
-    # later starts ignore the option
-    assert [o.id for o in store.load_or_import([obj(name="Other")])] == ["bin"]
+    assert [o.id for o in store.load_or_empty()] == ["bin"]
 
 
 def test_store_empty_and_invalid(tmp_path):
-    assert ObjectStore(str(tmp_path)).load_or_import([]) == []
+    assert ObjectStore(str(tmp_path)).load_or_empty() == []
     (tmp_path / "objects.json").write_text(json.dumps([obj(), obj()]))
     with pytest.raises(ConfigError):
         ObjectStore(str(tmp_path)).load()

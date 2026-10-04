@@ -28,7 +28,6 @@ SETTING_KEYS = ("poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2", "en
 DIAGNOSTICS = [
     ("last_source", "Last source", {"icon": "mdi:cctv"}),
     ("resolution", "Frame resolution", {"icon": "mdi:image-size-select-large"}),
-    ("last_check", "Last check", {"device_class": "timestamp"}),
     ("last_error", "Last error", {"icon": "mdi:alert-circle-outline"}),
     ("warning", "Warning", {"icon": "mdi:alert-outline", "_attrs": "reference"}),
     ("fetch_ms", "Fetch time", {"unit_of_measurement": "ms", "state_class": "measurement",
@@ -41,14 +40,20 @@ DIAGNOSTICS = [
     ("unique_frames", "Unique frames", {"state_class": "measurement", "icon": "mdi:content-duplicate"}),
     ("tag_size_px", "Tag size", {"unit_of_measurement": "px", "state_class": "measurement",
                                  "suggested_display_precision": 1}),
+    ("tag_aspect", "Tag aspect", {"state_class": "measurement", "suggested_display_precision": 2,
+                                  "icon": "mdi:aspect-ratio"}),
     ("sanity_ratio", "Sanity ratio", {"state_class": "measurement", "suggested_display_precision": 2}),
-    ("phantom_decodes", "Phantom decodes", {"state_class": "measurement", "icon": "mdi:ghost-outline",
+    ("phantom_decodes", "Discarded decodes", {"state_class": "measurement", "icon": "mdi:ghost-outline",
                                             "_attrs": "phantoms"}),
     ("miss_streak", "Miss streak", {"state_class": "measurement", "icon": "mdi:counter"}),
     ("crop_mean", "Crop brightness", {"state_class": "measurement", "suggested_display_precision": 1,
                                       "_attrs": "crop_stats"}),
     ("crop_std", "Crop contrast", {"state_class": "measurement", "suggested_display_precision": 1}),
 ]
+# Removed entities: their discovery config is cleared so HA deletes them.
+RETIRED_DIAGNOSTICS = ("last_check",)
+COMMANDS = ("check_now", "reset_reference")
+DIAG_ATTRS = ("reference", "phantoms", "crop_stats")
 
 
 @dataclass
@@ -101,7 +106,11 @@ class Topics:
         self.status = f"{b}/status"
         self.status_attrs = f"{b}/status/attributes"
         self.image = f"{b}/image"
-        self.check_now = f"{b}/cmd/check_now"
+        self.problem = f"{b}/problem"
+        self.problem_attrs = f"{b}/problem/attributes"
+
+    def cmd(self, name: str) -> str:
+        return f"{self.base}/cmd/{name}"
 
     def set(self, key: str) -> str:
         return f"{self.base}/set/{key}"
@@ -142,8 +151,14 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
             "name": "Status", "device_class": "enum", "entity_category": "diagnostic",
             "options": [ENUM_PRESENT, ENUM_ABSENT, ENUM_UNKNOWN],
             "state_topic": t.status, "json_attributes_topic": t.status_attrs}),
-        cfg("button", "check_now", {"name": "Check now", "command_topic": t.check_now,
+        cfg("binary_sensor", "problem", {
+            "name": "Tag rejected", "device_class": "problem", "entity_category": "diagnostic",
+            "state_topic": t.problem, "json_attributes_topic": t.problem_attrs}),
+        cfg("button", "check_now", {"name": "Check now", "command_topic": t.cmd("check_now"),
                                     "icon": "mdi:magnify-scan"}),
+        cfg("button", "reset_reference", {
+            "name": "Reset learned position", "entity_category": "config",
+            "command_topic": t.cmd("reset_reference"), "icon": "mdi:map-marker-off"}),
         cfg("switch", "enabled", {
             "name": "Enabled", "entity_category": "config",
             "command_topic": t.set("enabled"), "state_topic": t.setting("enabled"),
@@ -184,6 +199,12 @@ class ObjectPublisher:
     def publish_discovery(self):
         for topic, payload in discovery_configs(self.client.version, self.id, self.name):
             self.pub(topic, json.dumps(payload))
+        for topic in self._retired_topics():
+            self.pub(topic, b"")
+
+    def _retired_topics(self) -> list[str]:
+        return [t for k in RETIRED_DIAGNOSTICS
+                for t in (f"{DISCOVERY_PREFIX}/sensor/tagsense_{self.id}/{k}/config", self.t.diag(k))]
 
     def publish_setting(self, key: str, value):
         self.pub(self.t.setting(key), fmt(value))
@@ -210,6 +231,10 @@ class ObjectPublisher:
         for key, value in values.items():
             self.pub(self.t.diag(key), fmt(value))
 
+    def publish_problem(self, alert: dict | None):
+        self.pub(self.t.problem_attrs, json.dumps(alert or {}))
+        self.pub(self.t.problem, "ON" if alert else "OFF")
+
     def publish_image(self, jpeg: bytes):
         self.pub(self.t.image, jpeg, retain=False)
 
@@ -217,10 +242,12 @@ class ObjectPublisher:
         """Delete this object's entities from HA and clear its retained topics."""
         t = self.t
         topics = [topic for topic, _ in discovery_configs(self.client.version, self.id, self.name)]
-        topics += [t.presence, t.presence_attrs, t.presence_available, t.status, t.status_attrs]
+        topics += [t.presence, t.presence_attrs, t.presence_available, t.status, t.status_attrs,
+                   t.problem, t.problem_attrs]
+        topics += [t.cmd(c) for c in COMMANDS] + self._retired_topics()
         topics += [t.setting(k) for k in SETTING_KEYS] + [t.set(k) for k in SETTING_KEYS]
         topics += [t.diag(k) for k, _, _ in DIAGNOSTICS]
-        topics += [t.attrs(n) for n in ("reference", "phantoms", "crop_stats")]
+        topics += [t.attrs(n) for n in DIAG_ATTRS]
         for topic in topics:
             self.pub(topic, b"")
 
@@ -231,12 +258,12 @@ class MqttClient:
     def __init__(self, cfg: MqttConfig, version: str,
                  on_connected: Callable[[bool], None],
                  on_setting: Callable[[str, str, str], None],
-                 on_check_now: Callable[[str], None],
+                 on_command: Callable[[str, str], None],
                  on_ha_restart: Callable[[], None]):
         self.version = version
         self._on_connected = on_connected
         self._on_setting = on_setting
-        self._on_check_now = on_check_now
+        self._on_command = on_command
         self._on_ha_restart = on_ha_restart
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tagsense")
         if cfg.username:
@@ -275,7 +302,7 @@ class MqttClient:
         # Discovery and settings are published by the app before subscribing, so
         # retained command echoes match /data (the source of truth).
         self._on_connected(first)
-        client.subscribe([(f"{BASE}/+/set/+", 1), (f"{BASE}/+/cmd/check_now", 1),
+        client.subscribe([(f"{BASE}/+/set/+", 1), (f"{BASE}/+/cmd/+", 1),
                           (HA_STATUS, 1)])
         self.pub(AVAILABILITY, ONLINE)
 
@@ -287,7 +314,7 @@ class MqttClient:
                 self._on_ha_restart()
             return
         parts = msg.topic.split("/")
-        if len(parts) == 4 and parts[0] == BASE and parts[2] == "cmd" and parts[3] == "check_now":
-            self._on_check_now(parts[1])
+        if len(parts) == 4 and parts[0] == BASE and parts[2] == "cmd" and parts[3] in COMMANDS:
+            self._on_command(parts[1], parts[3])
         elif len(parts) == 4 and parts[0] == BASE and parts[2] == "set" and parts[3] in SETTING_KEYS:
             self._on_setting(parts[1], parts[3], payload)

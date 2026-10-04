@@ -1,10 +1,11 @@
 name: TagSense
-version: "0.4.1"
+version: "0.4.2"
 slug: tagsense
 description: Detect whether tagged objects (bin, car, chair...) are in place from AprilTags, published to HA via MQTT.
 url: https://github.com/lsnewman/ha-tagsense
 arch:
   - amd64
+  - aarch64
 startup: application
 boot: auto
 init: false
@@ -16,7 +17,6 @@ ingress_port: 8099
 panel_icon: mdi:tag-search
 panel_title: TagSense
 options:
-  objects: []
   go2rtc_url: ""
   max_aspect: 2.0
   min_size_ratio: 0.5
@@ -30,14 +30,6 @@ options:
   sanity_min_h: 0.02
   log_level: info
 schema:
-  # Imported once into the TagSense panel on first start, then ignored.
-  objects:
-    - name: str
-      id: str?
-      tag_id: int(0,29)
-      source: list(go2rtc|ha_camera)
-      go2rtc_stream: str?
-      camera_entity: str?
   go2rtc_url: str
   max_aspect: float(0,20)
   min_size_ratio: float(0,1)

@@ -89,3 +89,42 @@ def test_settings_clamping_and_persistence(tmp_path):
     back = Settings.load(p)
     assert back == s
     assert back.crop == (0.65, 0.45, 1.0, 1.0)     # x1 == x2 -> default crop
+
+
+class _Client:
+    version = "t"
+
+    def __init__(self):
+        self.msgs = []
+
+    def pub(self, topic, payload, retain=True):
+        self.msgs.append((topic, payload))
+
+
+def test_last_check_sensor_retired_and_new_entities():
+    cfgs = configs()
+    assert "homeassistant/sensor/tagsense_bin/last_check/config" not in cfgs
+    assert cfgs["homeassistant/sensor/tagsense_bin/tag_aspect/config"]["state_class"] == "measurement"
+    p = cfgs["homeassistant/binary_sensor/tagsense_bin/problem/config"]
+    assert p["device_class"] == "problem" and p["state_topic"] == "tagsense/bin/problem"
+    assert cfgs["homeassistant/button/tagsense_bin/reset_reference/config"]["command_topic"] == \
+        "tagsense/bin/cmd/reset_reference"
+    c = _Client()
+    m.ObjectPublisher(c, "bin", "Bin").publish_discovery()
+    assert ("homeassistant/sensor/tagsense_bin/last_check/config", b"") in c.msgs
+    assert ("tagsense/bin/diag/last_check", b"") in c.msgs
+
+
+def test_commands_routed():
+    calls = []
+    client = m.MqttClient.__new__(m.MqttClient)
+    client._on_command = lambda oid, cmd: calls.append((oid, cmd))
+    client._on_setting = lambda *a: calls.append(a)
+
+    class Msg:
+        def __init__(self, topic, payload=b"PRESS"):
+            self.topic, self.payload = topic, payload
+
+    for t in ("tagsense/bin/cmd/check_now", "tagsense/bin/cmd/reset_reference", "tagsense/bin/cmd/nope"):
+        client._handle_message(None, None, Msg(t))
+    assert calls == [("bin", "check_now"), ("bin", "reset_reference")]

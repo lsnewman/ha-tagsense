@@ -73,8 +73,9 @@ def quad_aspect(corners: np.ndarray) -> float:
 
 @dataclass
 class Phantom:
-    """A decode that does not count: another tag16h5 ID (phantom candidate),
-    or the target ID rejected by the shape gate."""
+    """A decode that does not count: another tag16h5 ID (ignored: no object on
+    this camera uses it, so most likely a phantom), or the target ID rejected
+    by the shape gate."""
     id: int
     corners: np.ndarray              # 4x2, full-frame px
     frame_wh: tuple[int, int]
@@ -98,7 +99,7 @@ class Phantom:
     def label(self) -> str:
         if self.rejected_target:
             return f"rejected id {self.id}" + (f" ({self.reason})" if self.reason else "")
-        return f"phantom id {self.id}"
+        return f"ignored: id {self.id} (not this object's tag)"
 
     def describe(self) -> str:
         cx, cy = self.centre_norm

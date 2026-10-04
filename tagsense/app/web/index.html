@@ -78,6 +78,28 @@ label.inline { display: inline-flex; align-items: center; margin: 0 16px 0 0; fo
 .h-sw { left: -8px; bottom: -8px; cursor: nesw-resize; } .h-se { right: -8px; bottom: -8px; cursor: nwse-resize; }
 .legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; }
 .legend i { width: 12px; height: 12px; display: inline-block; border-radius: 2px; }
+.notice.alert { border-left: 4px solid var(--warn); }
+.notice .row { margin-top: 8px; }
+/* 24h chart */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; line-height: 1.4; box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  white-space: nowrap; display: none; z-index: 2; }
+.chart text { fill: var(--muted); font-size: 11px; }
+.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+.chart .series { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .wash { fill: var(--accent); opacity: .1; stroke: none; }
+.chart .ceiling { fill: none; stroke: var(--muted); stroke-width: 1; opacity: .6; }
+.chart .limit { stroke: var(--warn); stroke-width: 1; }
+.chart .cross { stroke: var(--text); stroke-width: 1; opacity: .5; }
+.key i { width: 10px; height: 10px; display: inline-block; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.snaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.snaps a, .snaps div.snap { display: block; color: inherit; font-size: 12px; }
+.snaps img, .snaps .noimg { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center; color: #999; }
+textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%; min-height: 140px; padding: 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical; }
 .loading { padding: 40px; text-align: center; color: #aaa; line-height: 1.4; }
 </style>
 </head>
@@ -138,7 +160,7 @@ window.addEventListener("hashchange", route);
 function render(isRefresh) {
   const h = location.hash.replace(/^#/, "") || "/";
   let m;
-  if (h === "/") return overview();
+  if (h === "/") return isRefresh && transferOpen ? null : overview();
   if (h === "/new") return isRefresh ? null : objectForm(null);
   if ((m = h.match(/^\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : objectForm(m[1]);
   if ((m = h.match(/^\/obj\/([a-z0-9_]+)$/))) return detail(m[1], isRefresh);
@@ -157,12 +179,61 @@ function overview() {
     <div class="card">
       <div class="row"><h2 style="flex:1"><a href="#/obj/${o.id}">${esc(o.name)}</a></h2>${chip(o.state, "")}</div>
       <div class="muted small">tag ${o.tag_id} · ${esc(o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity)} · ${esc(o.reason)}</div>
+      ${o.alert ? `<div class="notice alert small" style="margin:10px 0 0">${esc(o.alert.message)}</div>` : ""}
       ${o.has_image ? `<img class="thumb" src="api/objects/${o.id}/last.jpg?t=${encodeURIComponent(o.last_check || "")}" alt="">`
                     : `<div class="thumb empty">no image yet</div>`}
       <div class="row"><span class="muted small" style="flex:1">checked ${ago(o.last_check)}${o.settings.enabled ? "" : " · disabled"}</span>
         <button onclick="checkNow('${o.id}', this)" ${o.settings.enabled ? "" : "disabled"}>Check now</button>
         <a class="btn" href="#/obj/${o.id}">Open</a></div>
-    </div>`).join("")}</div>`;
+    </div>`).join("")}</div>
+    <div class="card" style="margin-top:16px"><div class="row"><h3 style="flex:1;margin:0">Export / import</h3>
+      <button onclick="toggleTransfer()" id="t-toggle">Show</button></div>
+      <div id="transfer" style="display:none">
+        <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install.
+          Importing adds new objects and updates ones with the same id; objects not in the text are kept.</p>
+        <textarea id="t-export" readonly></textarea>
+        <div class="row" style="margin-top:8px"><button onclick="copyExport()">Copy</button>
+          <button onclick="downloadExport()">Download</button><span class="muted small" id="t-copied"></span></div>
+        <label for="t-import">Import</label>
+        <textarea id="t-import" placeholder="Paste exported text here"></textarea>
+        <div class="row" style="margin-top:8px"><button class="primary" onclick="importObjects()">Import</button></div>
+        <div class="error" id="t-error"></div></div></div>`;
+  if (transferOpen) toggleTransfer(true);
+}
+let transferOpen = false;
+async function toggleTransfer(keep) {
+  const el = document.getElementById("transfer");
+  if (!keep) transferOpen = el.style.display === "none";
+  el.style.display = transferOpen ? "" : "none";
+  document.getElementById("t-toggle").textContent = transferOpen ? "Hide" : "Show";
+  if (transferOpen) {
+    try { document.getElementById("t-export").value = JSON.stringify(await api("export"), null, 2); }
+    catch (e) { document.getElementById("t-error").textContent = e.message; }
+  }
+}
+async function copyExport() {
+  const t = document.getElementById("t-export");
+  try { await navigator.clipboard.writeText(t.value); } catch (e) { t.select(); document.execCommand("copy"); }
+  document.getElementById("t-copied").textContent = "copied";
+}
+function downloadExport() {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([document.getElementById("t-export").value], { type: "application/json" }));
+  a.download = "tagsense-objects.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+async function importObjects() {
+  const text = document.getElementById("t-import").value.trim(), err = document.getElementById("t-error");
+  err.textContent = "";
+  if (!text) return;
+  if (!confirm("Import these objects? Objects with the same id are updated (their settings too); new ones are added.")) return;
+  try {
+    const r = await api("import", { method: "POST", body: { text } });
+    alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.`);
+    document.getElementById("t-import").value = "";
+    await refresh();
+  } catch (e) { err.textContent = e.message; }
 }
 async function checkNow(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = "Checking…"; }
@@ -184,12 +255,14 @@ function detail(id, isRefresh) {
       <a class="btn" href="#/edit/${id}">Edit</a>
     </div>
     <div class="muted small" id="d-sub"></div></div>
+    <div id="d-alert"></div>
 
     <div class="cols">
       <div class="card">
         <div class="row"><h3 style="flex:1;margin:0">Search area</h3>
           <button onclick="loadFrame(true)">Refresh frame</button>
           <button onclick="setCrop([0,0,1,1])">Whole frame</button>
+          <button id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>
           <button onclick="setCrop(savedCrop())">Undo</button>
           <button class="primary" id="crop-save" onclick="saveCrop()" disabled>Save</button></div>
         <p class="muted small">Drag the box to move it, drag a corner to resize, or drag on the image to draw a new one.
@@ -223,13 +296,19 @@ function detail(id, isRefresh) {
       </div>
     </div>
 
+    <div class="card"><div class="row"><h3 style="flex:1;margin:0">Last 24 hours</h3>
+      <span class="muted small key" id="chart-key"></span></div>
+      <div class="chart" id="chart"><div class="muted small">No checks yet.</div></div></div>
+
     <div class="cols">
       <div class="card"><h3>Recent checks</h3><div id="d-history" class="small"></div></div>
       <div class="stack">
         <div class="card"><h3>Diagnostics</h3><div id="d-diag" class="small"></div></div>
-        <div class="card" id="d-phantom-card" style="display:none"><h3>Last phantom read</h3><div id="d-phantom"></div></div>
+        <div class="card" id="d-phantom-card" style="display:none"><h3>Last ignored / rejected read</h3><div id="d-phantom"></div></div>
       </div>
     </div>
+    <div class="card"><h3>State changes</h3><div id="d-snaps" class="small"><span class="muted">None yet.</span></div>
+      <div class="hint">The checked image each time the reported state changed (the last 20 are kept).</div></div>
     <div class="card" id="print-card"><h3>Print tag ${o.tag_id}</h3>
       <div class="cols" style="grid-template-columns:minmax(0,1fr) 160px;align-items:start">
         <div>
@@ -265,12 +344,18 @@ async function updateDetail(o) {
   document.getElementById("d-sub").textContent =
     `tag ${o.tag_id} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity}${o.fallback ? " (fallback " + (o.source === "go2rtc" ? o.camera_entity : "go2rtc " + o.go2rtc_stream) + ")" : ""} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
   document.getElementById("d-check").disabled = !o.settings.enabled;
+  document.getElementById("d-alert").innerHTML = o.alert ? `<div class="notice alert" style="margin:0">
+    <b>Tag rejected</b> · ${esc(o.alert.message)}
+    ${o.alert.detail ? `<div class="muted small">${esc(o.alert.detail)}</div>` : ""}
+    ${o.alert.reason !== "aspect" ? `<div class="row"><button onclick="resetReference('${o.id}')">Reset learned position</button></div>` : ""}</div>` : "";
+  document.getElementById("crop-fit").disabled = !o.reference.learned_hits;
   const d = o.diag || {};
   document.getElementById("d-last").innerHTML = (o.has_image
       ? `<img class="thumb" style="margin-top:0" src="api/objects/${o.id}/last.jpg?t=${encodeURIComponent(o.last_check || "")}" alt="">` : "")
     + `<table class="kv small">
       <tr><td>Warning</td><td>${esc(d.warning || "none")}</td></tr>
       <tr><td>Tag size</td><td>${fmtNum(d.tag_size_px)} px</td></tr>
+      <tr><td>Tag aspect</td><td>${fmtNum(d.tag_aspect, 2)} <span class="muted">(limit ${state.max_aspect ? state.max_aspect : "off"})</span></td></tr>
       <tr><td>Miss streak</td><td>${o.miss_streak}</td></tr></table>`;
   document.getElementById("d-diag").innerHTML = `<table class="kv">
     <tr><td>Source</td><td>${esc(d.last_source || "–")} ${esc(d.resolution || "")}</td></tr>
@@ -281,7 +366,8 @@ async function updateDetail(o) {
     <tr><td>Crop brightness / contrast</td><td>${fmtNum(d.crop_mean)} / ${fmtNum(d.crop_std)}</td></tr>
     <tr><td>Fetch failures</td><td>${d.fetch_failures ?? "–"}</td></tr>
     <tr><td>Last error</td><td>${esc(d.last_error || "none")}</td></tr>
-    <tr><td>Learned position</td><td>${o.reference.learned_hits} hit${o.reference.learned_hits === 1 ? "" : "s"}${o.reference.warnings_active ? "" : " (warnings start at 10)"}</td></tr></table>`;
+    <tr><td>Learned position</td><td>${o.reference.learned_hits} hit${o.reference.learned_hits === 1 ? "" : "s"}${o.reference.warnings_active ? "" : ` (size gate and warnings start at ${o.reference.min_hits})`}
+      ${o.reference.learned_hits ? `<div><button class="small" style="margin-top:4px;padding:2px 8px" onclick="resetReference('${o.id}')">Reset</button></div>` : ""}</td></tr></table>`;
   const ph = document.getElementById("d-phantom-card");
   ph.style.display = o.last_phantom ? "" : "none";
   if (o.last_phantom) document.getElementById("d-phantom").innerHTML =
@@ -295,15 +381,37 @@ async function updateDetail(o) {
     lastHistoryKey = o.last_check;
     try {
       const hist = await api(`objects/${o.id}/history`);
-      document.getElementById("d-history").innerHTML = hist.length ? `<table><tr><th>When</th><th>Trigger</th><th>Result</th><th>Hits</th><th>Reported</th></tr>
+      document.getElementById("d-history").innerHTML = hist.length ? `<table><tr><th>When</th><th>Trigger</th><th>Result</th><th>Hits</th><th>Aspect</th><th>Reported</th></tr>
         ${hist.map(h => `<tr><td title="${esc(h.at)}">${ago(h.at)}</td><td>${esc(h.trigger)}</td><td>${esc(h.outcome)}</td>
-          <td>${h.hits}/${h.valid}/${h.frames}</td><td>${esc(h.reported)} <span class="muted">${esc(h.reason)}</span>
+          <td>${h.hits}/${h.valid}/${h.frames}</td><td>${h.aspect ? h.aspect.toFixed(2) : "–"}</td><td>${esc(h.reported)} <span class="muted">${esc(h.reason)}</span>
           ${h.warning ? `<div style="color:var(--warn)">${esc(h.warning)}</div>` : ""}
           ${h.phantoms.length ? `<div class="muted">${h.phantoms.map(esc).join("<br>")}</div>` : ""}</td></tr>`).join("")}</table>
-        <div class="hint">Hits = frames with the tag / usable frames / frames fetched. Kept in memory: the last 50 checks since the app started.</div>`
+        <div class="hint">Hits = frames with the tag / usable frames / frames fetched. When the object is already present,
+          a check stops as soon as enough frames have hit, so fewer frames are fetched. Kept in memory: the last 50 checks since the app started.</div>`
         : `<span class="muted">No checks since the app started.</span>`;
     } catch (e) { /* ignore */ }
+    api(`objects/${o.id}/chart`).then(pts => drawChart(pts)).catch(() => {});
+    api(`objects/${o.id}/snapshots`).then(list => drawSnapshots(o.id, list)).catch(() => {});
   }
+}
+
+async function resetReference(id) {
+  const o = objById(id);
+  if (!confirm(`Reset the learned position of ${o ? o.name : id}?\n\nUse this after moving the object, e.g. further from the camera. ` +
+               `The size gate and position warnings stay off until ${o ? o.reference.min_hits : 10} new hits have been learned.`)) return;
+  try { await api(`objects/${id}/reset_reference`, { method: "POST" }); refresh(); }
+  catch (e) { alert(e.message); }
+}
+
+function drawSnapshots(id, list) {
+  const el = document.getElementById("d-snaps");
+  if (!el) return;
+  el.innerHTML = list.length ? `<div class="snaps">${list.map(e => {
+    const label = `<div><b>${esc(e.from)} → ${esc(e.to)}</b></div><div class="muted" title="${esc(e.at)}">${ago(e.at)} · ${esc(e.reason)}</div>`;
+    return e.has_image
+      ? `<a href="api/objects/${id}/snapshots/${e.name}.jpg" target="_blank"><img loading="lazy" src="api/objects/${id}/snapshots/${e.name}.jpg" alt="">${label}</a>`
+      : `<div class="snap"><div class="noimg">no image</div>${label}</div>`;
+  }).join("")}</div>` : `<span class="muted">None yet.</span>`;
 }
 
 async function saveSetting(key, value) {
@@ -319,6 +427,115 @@ async function deleteObject(id) {
   catch (e) { alert(e.message); }
 }
 const currentId = () => (location.hash.match(/^#\/obj\/([a-z0-9_]+)$/) || [])[1];
+
+// ---------- 24h chart -----------------------------------------------------
+// Small multiples on one time axis (never two y-scales), in 10-minute buckets:
+// hit rate (frames with the tag / frames fetched; early-exit checks fetch fewer
+// frames, so raw hit counts would mislead), crop contrast, the worst tag aspect
+// against max_aspect, and the reported state.
+const STATE_COLOR = { present: "var(--ok)", absent: "var(--muted)", unknown: "var(--warn)" };
+const BUCKET_S = 600;
+let chartPts = [];
+function bucketise(pts, t0) {
+  const n = 86400 / BUCKET_S, out = Array.from({ length: n }, () => null);
+  for (const p of pts) {
+    const i = Math.floor((p.t - t0) / BUCKET_S);
+    if (i < 0 || i >= n) continue;
+    const b = out[i] || (out[i] = { t: t0 + (i + 0.5) * BUCKET_S, i, checks: 0, hits: 0, frames: 0, cSum: 0, cN: 0,
+                                     aspect: null, states: {}, outcomes: {} });
+    b.checks++; b.hits += p.hits; b.frames += p.frames || 0;
+    if (p.contrast !== null && p.contrast !== undefined) { b.cSum += p.contrast; b.cN++; }
+    if (p.aspect) b.aspect = Math.max(b.aspect || 0, p.aspect);
+    b.states[p.reported] = (b.states[p.reported] || 0) + 1;
+    b.outcomes[p.outcome] = (b.outcomes[p.outcome] || 0) + 1;
+  }
+  for (const b of out) if (b) {
+    b.rate = b.frames ? 100 * b.hits / b.frames : null;
+    b.contrast = b.cN ? b.cSum / b.cN : null;
+    b.state = Object.entries(b.states).sort((x, y) => y[1] - x[1])[0][0];
+  }
+  return out;
+}
+function drawChart(pts) {
+  const el = document.getElementById("chart");
+  if (!el) return;
+  chartPts = pts;
+  document.getElementById("chart-key").innerHTML = pts.length
+    ? Object.entries(STATE_COLOR).map(([k, c]) => `<span style="margin-left:10px"><i style="background:${c}"></i>${k}</span>`).join("") : "";
+  if (!pts.length) { el.innerHTML = `<div class="muted small">No checks in the last 24 hours.</div>`; return; }
+  const W = Math.max(280, el.clientWidth), L = 34, R = 8, iw = W - L - R;
+  const t1 = Math.ceil(Date.now() / 1000 / BUCKET_S) * BUCKET_S, t0 = t1 - 86400;
+  const x = t => L + (t - t0) / 86400 * iw, bw = iw / (86400 / BUCKET_S);
+  const buckets = bucketise(pts, t0);
+  const maxC = Math.max(10, ...buckets.map(b => b && b.contrast || 0));
+  const lim = state.max_aspect || 0;
+  const maxA = Math.max(lim ? lim * 1.15 : 2, ...buckets.map(b => b && b.aspect || 0));
+  const panels = [
+    { key: "rate", title: "Hit rate, % of frames with the tag", h: 56, max: 100, ticks: [0, 100], wash: true },
+    { key: "contrast", title: "Crop contrast", h: 48, max: maxC, ticks: [0, Math.round(maxC)] },
+    { key: "aspect", title: "Tag aspect, worst per 10 min" + (lim ? ` (orange line: limit ${lim})` : ""), h: 48, min: 1,
+      max: maxA, ticks: [1, +maxA.toFixed(1)], limit: lim },
+  ];
+  const f = n => n.toFixed(1);
+  const segments = key => {                 // runs of buckets with a value
+    const segs = [];
+    let cur = null;
+    buckets.forEach((b, i) => {
+      const v = b && b[key];
+      if (v === null || v === undefined) { cur = null; return; }
+      if (!cur) segs.push(cur = []);
+      cur.push([x(b.t), v]);
+    });
+    return segs;
+  };
+  let y = 0, out = "";
+  for (const pn of panels) {
+    y += 16;
+    const top = y, lo = pn.min || 0, yOf = v => top + pn.h - (Math.min(v, pn.max) - lo) / (pn.max - lo) * pn.h;
+    out += `<text x="${L}" y="${top - 5}" style="fill:var(--text)">${esc(pn.title)}</text>`;
+    for (const tk of pn.ticks) out += `<line class="grid-line" x1="${L}" x2="${W - R}" y1="${yOf(tk)}" y2="${yOf(tk)}"/>
+      <text x="${L - 6}" y="${yOf(tk) + 4}" text-anchor="end">${tk}</text>`;
+    if (pn.limit) out += `<line class="limit" x1="${L}" x2="${W - R}" y1="${yOf(pn.limit)}" y2="${yOf(pn.limit)}"/>`;
+    for (const seg of segments(pn.key)) {
+      if (seg.length === 1) seg.push([seg[0][0] + bw * 0.6, seg[0][1]]);   // lone bucket: a short dash
+      const d = seg.map(([px, v], i) => `${i ? "L" : "M"}${f(px)} ${f(yOf(v))}`).join("");
+      if (pn.wash) out += `<path class="wash" d="${d}L${f(seg[seg.length - 1][0])} ${f(yOf(lo))}L${f(seg[0][0])} ${f(yOf(lo))}Z"/>`;
+      out += `<path class="series" d="${d}"/>`;
+    }
+    y += pn.h + 8;
+  }
+  y += 4;
+  const bandY = y;
+  for (const b of buckets) if (b)
+    out += `<rect x="${f(x(b.t) - bw / 2)}" y="${bandY}" width="${f(bw + 0.5)}" height="8" style="fill:${STATE_COLOR[b.state] || "var(--line)"}"/>`;
+  y += 8 + 16;
+  for (let h = 0; h <= 24; h += 6) {
+    const t = t0 + h * 3600, d = new Date(t * 1000);
+    out += `<text x="${x(t)}" y="${y - 2}" text-anchor="${h === 0 ? "start" : h === 24 ? "end" : "middle"}">${h === 24 ? "now"
+      : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</text>`;
+  }
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${y}" height="${y}" role="img" aria-label="Checks over the last 24 hours">${out}
+    <line class="cross" id="c-cross" x1="0" x2="0" y1="8" y2="${bandY + 8}" style="display:none"/></svg><div class="tip" id="c-tip"></div>`;
+  const svg = el.querySelector("svg"), tip = document.getElementById("c-tip"), cross = document.getElementById("c-cross");
+  const hm = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  svg.addEventListener("pointermove", e => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    const b = buckets[Math.floor((px - L) / bw)];
+    if (!b) { tip.style.display = cross.style.display = "none"; return; }
+    const bx = x(b.t);
+    cross.setAttribute("x1", bx); cross.setAttribute("x2", bx); cross.style.display = "";
+    tip.innerHTML = `<b>${hm(b.t - BUCKET_S / 2)}–${hm(b.t + BUCKET_S / 2)}</b> · ${b.checks} check${b.checks === 1 ? "" : "s"}<br>
+      ${Object.entries(b.states).map(([k, n]) => `${esc(k)} ${n}`).join(", ")}
+      (${Object.entries(b.outcomes).map(([k, n]) => `${esc(k)} ${n}`).join(", ")})<br>
+      hit rate ${fmtNum(b.rate, 0)} % · contrast ${fmtNum(b.contrast)} · worst aspect ${fmtNum(b.aspect, 2)}`;
+    tip.style.display = "block";
+    const left = bx * r.width / W;
+    tip.style.left = Math.min(Math.max(0, left + 12), r.width - tip.offsetWidth) + "px";
+    tip.style.top = "8px";
+  });
+  svg.addEventListener("pointerleave", () => { tip.style.display = cross.style.display = "none"; });
+}
+window.addEventListener("resize", () => { if (chartPts.length) drawChart(chartPts); });
 
 // ---------- crop editor ---------------------------------------------------
 let crop = [0, 0, 1, 1];
@@ -341,6 +558,14 @@ function setCrop(c, fromServer = false) {
     `M0 0H1V1H0Z M${x1} ${y1}V${y2}H${x2}V${y1}Z`);
   document.getElementById("crop-save").disabled = !changed;
   document.getElementById("crop-values").textContent = `x ${x1.toFixed(2)}–${x2.toFixed(2)} · y ${y1.toFixed(2)}–${y2.toFixed(2)}`;
+}
+
+function fitToTag() {
+  const o = objById(currentId()), ref = o && o.reference, img = document.getElementById("frame");
+  if (!ref || !ref.centre || !ref.size) return;
+  const ratio = img.naturalWidth ? img.naturalHeight / img.naturalWidth : 9 / 16;
+  const hy = 3 * ref.size, hx = hy * ratio, [cx, cy] = ref.centre;
+  setCrop([cx - hx, cy - hy, cx + hx, cy + hy]);
 }
 
 function drawOverlay(o) {

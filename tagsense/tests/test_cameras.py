@@ -1,4 +1,5 @@
 """Shared bursts: one fetch per burst per camera, judged by every object on it."""
+import json
 import threading
 
 import cv2
@@ -6,6 +7,7 @@ import numpy as np
 
 from app import decision as dec
 from app.cameras import CameraWorker
+from app.ha_notify import NullNotifier
 from app.mqtt_ha import ObjectPublisher
 from app.objects import ObjectConfig
 from app.scheduler import CONFIRM, MANUAL, SHARED
@@ -45,15 +47,17 @@ def two_tag_jpeg():
     return cv2.imencode(".jpg", frame)[1].tobytes()
 
 
-def setup(tmp_path):
-    tuning = Tuning(dec.Config(present_min_hits=1), 2.0, 45.0, 0.5, 0.02, 0.5)
+def setup(tmp_path, burst=3, min_hits=1, tags=(("bin", 5), ("recycling", 7))):
+    tuning = Tuning(dec.Config(present_min_hits=min_hits), 2.0, 45.0, 0.5, 0.02, 0.5)
     client = FakeClient()
     src = CountingSource(two_tag_jpeg())
-    cam = CameraWorker("cam", src, threading.Condition(), 3, 0.0, threading.Event())
+    cam = CameraWorker("cam", src, threading.Condition(), burst, 0.0, threading.Event())
+    cam.notifier = NullNotifier()
     objs = {}
-    for oid, tag in (("bin", 5), ("recycling", 7)):
+    for oid, tag in tags:
         oc = ObjectConfig(oid, oid.title(), tag, "go2rtc", "cam")
-        o = TrackedObject(oc, tuning, str(tmp_path), ObjectPublisher(client, oid, oc.name), cam.cond)
+        o = TrackedObject(oc, tuning, str(tmp_path), ObjectPublisher(client, oid, oc.name), cam.cond,
+                          cam.notifier)
         cam.objects.append(o)
         objs[oid] = o
     for o in cam.objects:
@@ -66,10 +70,10 @@ def run_once(cam):
     import time
     with cam.cond:
         due = cam.due(time.monotonic())
-    burst = cam.fetch_burst()
-    for o in cam.objects:
-        if o.settings.enabled:
-            o.process(due.get(o, SHARED), burst)
+        enabled = [o for o in cam.objects if o.settings.enabled]
+    burst = cam.fetch_burst(enabled)
+    for o in enabled:
+        o.process(due.get(o, SHARED), burst)
     return due
 
 
@@ -158,3 +162,67 @@ def test_size_gate_passes_normal_size_and_waits_for_learning(tmp_path):
     objs["bin"].on_check_now()
     run_once(cam)
     assert '"hits": 3' in client.last("tagsense/bin/status/attributes")
+
+
+def test_rejection_streak_alerts_and_reset_clears(tmp_path):
+    cam, client, objs = trained_bin(tmp_path, 0.185)
+    b, notes = objs["bin"], cam.notifier.calls
+    for _ in range(2):
+        b.on_check_now()
+        run_once(cam)
+    assert client.last("tagsense/bin/problem") == "OFF" and not notes
+    b.on_check_now()
+    run_once(cam)
+    assert client.last("tagsense/bin/problem") == "ON"
+    assert b.status()["alert"]["reason"] == "size"
+    assert [c[0] for c in notes] == ["create"]
+    assert "Reset learned position" in notes[0][1]["message"]
+    assert notes[0][1]["notification_id"] == "tagsense_bin_rejected"
+    b.on_check_now()
+    run_once(cam)
+    assert len(notes) == 1                               # same message: not resent
+    b.reset_reference()
+    assert not (b.reference.hits or b.decision.reject_streak)
+    assert json.loads((tmp_path / "objects/bin/reference.json").read_text())["hits"] == 0
+    assert client.last("tagsense/bin/problem") == "OFF"
+    assert [c[0] for c in notes] == ["create", "dismiss"]
+    b.on_check_now()
+    run_once(cam)                                        # size gate off again: a hit
+    assert '"outcome": "hit"' in client.last("tagsense/bin/status/attributes")
+
+
+def test_early_exit_when_present(tmp_path):
+    cam, src, client, objs = setup(tmp_path, burst=5, min_hits=2, tags=(("bin", 5),))
+    b = objs["bin"]
+    b.on_check_now()
+    run_once(cam)
+    assert src.calls == 5                                # not yet present: full burst
+    b.on_check_now()
+    run_once(cam)
+    assert src.calls == 7                                # present, 2/2 hits: stop
+    assert '"frames": 2' in client.last("tagsense/bin/status/attributes")
+    assert '"outcome": "hit"' in client.last("tagsense/bin/status/attributes")
+
+
+def test_no_early_exit_on_shared_camera_with_a_miss(tmp_path):
+    cam, src, client, objs = setup(tmp_path, burst=5, min_hits=2)
+    for o in objs.values():
+        o.decision.state = dec.PRESENT
+    objs["bin"].on_check_now()
+    run_once(cam)
+    assert src.calls == 5                                # recycling's tag is missing
+
+
+def test_snapshot_on_state_change_and_chart(tmp_path):
+    cam, src, client, objs = setup(tmp_path)
+    objs["bin"].on_check_now()
+    run_once(cam)
+    snaps = objs["bin"].snapshots.list()
+    assert [(e["from"], e["to"]) for e in snaps] == [("unknown", "present")]
+    assert objs["bin"].snapshots.read(snaps[0]["name"])[:2] == b"\xff\xd8"
+    objs["bin"].on_check_now()
+    run_once(cam)
+    assert len(objs["bin"].snapshots.list()) == 1        # no change: no new snapshot
+    pts = objs["bin"].chart_points()
+    assert len(pts) == 2 and pts[-1]["hits"] == 3 and pts[-1]["reported"] == "present"
+    assert pts[-1]["aspect"] is not None and pts[-1]["contrast"] is not None

@@ -15,6 +15,10 @@ def miss():
     return CheckResult(frames=5, fetch_failures=0, valid=5, hits=0)
 
 
+def rejected(n=2):
+    return CheckResult(frames=5, fetch_failures=0, valid=5, hits=0, rejected=n)
+
+
 def fetch_fail():
     return CheckResult(frames=5, fetch_failures=5, valid=0, hits=0)
 
@@ -73,6 +77,29 @@ def test_inconclusive_keeps_state_resets_streak_updates_last_seen():
     assert dec.reported(cfg) == (d.ABSENT, d.R_INCONCLUSIVE)
     assert dec.update(hit(3), cfg, 5060.0, POLL) == d.HIT
     assert dec.state == d.PRESENT
+
+
+def test_rejected_reads_are_misses():
+    dec = Decision(state=d.PRESENT)
+    assert run(dec, [rejected()] * 3) == [d.MISS] * 3
+    assert dec.reported(CFG) == (d.ABSENT, d.R_NO_TAG)
+    assert dec.reject_streak == 3
+
+
+@pytest.mark.parametrize("other", [hit(), hit(1), miss()])
+def test_reject_streak_resets_on_other_valid_checks(other):     # a clean miss too
+    cfg = Config(present_min_hits=2)
+    dec = Decision(state=d.PRESENT)
+    run(dec, [rejected(), rejected(), other], cfg=cfg)
+    assert dec.reject_streak == 0
+
+
+def test_reject_streak_survives_failures_and_restart(tmp_path):
+    dec = Decision(state=d.PRESENT)
+    run(dec, [rejected(), fetch_fail(), rejected()])
+    assert dec.reject_streak == 2
+    dec.save(str(tmp_path / "s.json"))
+    assert Decision.load(str(tmp_path / "s.json")).reject_streak == 2
 
 
 def test_failed_checks_never_produce_absent():

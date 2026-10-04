@@ -1,18 +1,14 @@
 """Object configuration: validation and the /data/objects.json store.
 
-The web UI owns the object list. On first start it is imported once from the
-`objects` app option; after that the option is ignored.
+The web UI owns the object list (it can also be exported and imported as text).
 """
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import shutil
 from dataclasses import asdict, dataclass
-
-log = logging.getLogger(__name__)
 
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 RESERVED_IDS = {"availability"}
@@ -151,14 +147,5 @@ class ObjectStore:
             json.dump([o.to_dict() for o in objs], f, indent=2)
         os.replace(tmp, self.path)
 
-    def load_or_import(self, option_objects: list) -> list[ObjectConfig]:
-        """First start: import the `objects` option. Afterwards it is ignored."""
-        if self.exists():
-            if option_objects:
-                log.info("the 'objects' app option is ignored: objects are managed in the "
-                         "TagSense panel (imported %s)", self.path)
-            return self.load()
-        objs = parse_list(option_objects)
-        self.save(objs)
-        log.info("imported %d object(s) from the app options into %s", len(objs), self.path)
-        return objs
+    def load_or_empty(self) -> list[ObjectConfig]:
+        return self.load() if self.exists() else []

@@ -9,6 +9,7 @@ import threading
 
 from . import decision as dec
 from .cameras import CameraWorker
+from .ha_notify import Notifier
 from .mqtt_ha import MqttClient, ObjectPublisher, supervisor_mqtt_config
 from .objects import (ConfigError, ObjectConfig, ObjectStore, remove_object_dir,
                       validate_list)
@@ -23,7 +24,6 @@ VERSION = os.environ.get("TAGSENSE_VERSION", "dev")
 WEB_PORT = int(os.environ.get("TAGSENSE_WEB_PORT", "8099"))
 
 DEFAULT_OPTIONS = {
-    "objects": [],
     "go2rtc_url": "",
     "max_aspect": 2.0,
     "min_size_ratio": 0.5,
@@ -56,14 +56,16 @@ def make_source(oc: ObjectConfig, opts: dict):
 
 
 class App:
-    def __init__(self, opts: dict, mqtt=None, source_factory=make_source, data_dir: str = DATA_DIR):
+    def __init__(self, opts: dict, mqtt=None, source_factory=make_source, data_dir: str = DATA_DIR,
+                 notifier: Notifier | None = None):
         self.opts = opts
+        self.notifier = notifier or Notifier()
         self.data_dir = data_dir
         self.source_factory = source_factory
         self.stop_event = threading.Event()
         self.reload_lock = threading.RLock()
         self.store = ObjectStore(data_dir)
-        self.configs = self.store.load_or_import(opts.get("objects") or [])
+        self.configs = self.store.load_or_empty()
         self.tuning = Tuning(
             cfg=dec.Config(present_min_hits=int(opts["present_min_hits"]),
                            absent_checks=int(opts["absent_checks"]),
@@ -76,7 +78,7 @@ class App:
         self.mqtt = mqtt or MqttClient(supervisor_mqtt_config(opts), VERSION,
                                        on_connected=self._on_connected,
                                        on_setting=self._on_setting,
-                                       on_check_now=self._on_check_now,
+                                       on_command=self._on_command,
                                        on_ha_restart=self._on_ha_restart)
         self.connected = False
         self.cameras: dict[tuple, CameraWorker] = {}
@@ -103,7 +105,7 @@ class App:
                     self.gen_stop)
             cam = cameras[key]
             obj = TrackedObject(oc, self.tuning, self.data_dir,
-                                ObjectPublisher(self.mqtt, oc.id, oc.name), cam.cond)
+                                ObjectPublisher(self.mqtt, oc.id, oc.name), cam.cond, self.notifier)
             obj.camera = cam
             cam.objects.append(obj)
             objects[oc.id] = obj
@@ -144,6 +146,7 @@ class App:
             for oc in removed:
                 if o := old_objects.get(oc.id):
                     o.pub.remove()
+                    o.dismiss_alert()
                 remove_object_dir(self.data_dir, oc.id)
             # Renamed objects keep their id; republish discovery with the new name.
             self.configs = list(configs)
@@ -175,11 +178,14 @@ class App:
         if o := self.objects.get(obj_id):
             o.on_setting(key, value)
 
-    def _on_check_now(self, obj_id: str):
-        if o := self.objects.get(obj_id):
+    def _on_command(self, obj_id: str, cmd: str):
+        o = self.objects.get(obj_id)
+        if not o:
+            log.warning("%s requested for unknown object %r", cmd, obj_id)
+        elif cmd == "check_now":
             o.on_check_now()
-        else:
-            log.warning("check requested for unknown object %r", obj_id)
+        elif cmd == "reset_reference":
+            o.reset_reference()
 
     # --- lifecycle --------------------------------------------------------
 

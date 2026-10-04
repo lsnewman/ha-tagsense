@@ -50,15 +50,20 @@ the live frame. Changes apply straight away.
 - **Print tag** on the object's page: PNG for paper, or SVG in millimetres for
   a cutter or two-colour 3D print. The white margin can be turned off if the
   tag sits on a light surface.
-- The `objects` option on this tab is only used once, to import objects on
-  the first start of 0.4.0. After that it is ignored.
+- **Fit to tag** in the search-area editor sets the box to the learned tag
+  position, plus 3x the tag size on each side. It still needs *Save*.
+- **Export / import** (bottom of the overview): all objects and their
+  settings as text. Importing adds new objects and updates ones with the same
+  ID; objects not in the text are kept.
+- **Last 24 hours** chart and **State changes** snapshots are on each
+  object's page.
 
 ### Global options
 
 | Option | Default | Notes |
 |---|---|---|
 | `go2rtc_url` | *(empty)* | e.g. `http://<frigate-hostname>:1984`. The Frigate app's hostname is on its app page, and it changes if Frigate is reinstalled under another slug. Required if any object uses go2rtc. |
-| `max_aspect` | `2.0` | Shape gate: a read of the object's tag whose longest/shortest edge ratio is above this is rejected (gravel phantoms decode as slivers, measured 2.2-6; the real tag about 1.5). 0 disables it. |
+| `max_aspect` | `2.0` | Shape gate: a read of the object's tag whose longest/shortest edge ratio is above this is rejected (gravel phantoms decode as slivers, measured 2.2-6; the real tag about 1.5 by day). 0 disables it. Use the *Tag aspect* sensor's history to set it. |
 | `min_size_ratio` | `0.5` | Shape gate: once 10 sightings are learned, a read of the object's tag smaller than this fraction of its usual size is rejected. 0 disables it. |
 | `burst_size` | `5` | Frames per check |
 | `burst_interval_s` | `1.0` | Seconds between frames in a burst |
@@ -77,7 +82,7 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
 - **TagSense `<name>`** (`binary_sensor`, occupancy): on = present, off = absent. It is
   **unavailable** when the state is unknown, when TagSense is disabled, or
   when the app is not running. Attributes: `last_seen`, `size_px`, `centre`,
-  `area_px`, `source`.
+  `area_px`, `aspect`, `source`.
 - **Status** (enum sensor, diagnostic): `present` / `absent` / `unknown`. The
   `reason` attribute is one of:
   - `starting`: no state yet
@@ -93,6 +98,14 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
   confirmation checks follow every `confirm_delay_s` until the object is
   confirmed absent or the tag is seen. Automations (for example, a Frigate
   person-left-zone event) only need to press this button.
+- **Tag rejected** (problem binary sensor, diagnostic): on after 3 checks in a
+  row in which the tag was read but every read was rejected by the shape gate
+  (those checks count as misses). A Home Assistant notification with the
+  reason, and what to change if the object really is there, appears at the
+  same time. Both clear by themselves after a check without rejected reads.
+- **Reset learned position** (button): forget the learned usual size and
+  position, e.g. after moving the object further from the camera. The size
+  gate and warnings stay off until 10 new hits are learned.
 - **Enabled** (switch) and **Poll interval** (number, seconds; 0 = manual only,
   otherwise at least 10).
 - **Crop x1/y1/x2/y2** (numbers, 0–1): the normalised region searched for the
@@ -102,21 +115,23 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
   live frame. The crop numbers below are the same setting.
 - **Last crop** (image): the latest crop annotated with the tag outline, the
   ID and size, and a red dot on corner 0. Any other tag ID decoded during the
-  burst (a phantom candidate), or a decode of the target ID rejected by the
+  burst (`ignored`: no object on this camera uses that ID), or a decode of the target ID rejected by the
   shape gate, is outlined in orange. To tune the crop, change a crop
   number, press *Check now*, and look at the image.
-- **Diagnostics**: last source, frame resolution, last check, last error,
+- **Diagnostics**: last source, frame resolution, last error,
   warning (the tag decoded far from the usual size or position, which may be
   a phantom; "usual" is learned from past hits, warnings start after 10 of
   them, and the learned values are attributes of this sensor), fetch time, detect time, fetch failures, discard rate, unique
-  frames (duplicates mean the source served a stale frame), phantom decodes
-  (other tag IDs decoded this check; attributes list where, plus the last one
-  ever seen), tag size, sanity
+  frames (duplicates mean the source served a stale frame), discarded decodes
+  (ignored other tag IDs and rejected reads this check; attributes list where,
+  plus the last one ever seen), tag size, tag aspect (the worst edge ratio of
+  the accepted reads; compare with `max_aspect`), sanity
   ratio, miss streak, crop brightness and contrast.
 
 ## How a check decides
 
-1. Fetch `burst_size` frames. Each frame is decoded and scored for smearing.
+1. Fetch up to `burst_size` frames. If the object is already present and the
+   first `present_min_hits` frames all hit, the rest are skipped. Each frame is decoded and scored for smearing.
    The score is the ratio of vertical to horizontal pixel differences in the
    crop. Corrupt "vertical streak" frames score about 0, real scenes (dark
    ones included) about 1. Smeared, flat and undecodable frames are discarded.
@@ -131,6 +146,9 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
    after `absent_checks` consecutive misses. The streak resets if the last
    miss is older than 3 poll intervals (at least 5 minutes), so an outage
    between misses cannot add up to "absent".
+   A read rejected by the shape gate is not the tag, so a check whose only
+   reads were rejected is a miss too. Three such checks in a row also raise
+   the *Tag rejected* alert, in case the gate is rejecting the real tag.
 
 State and settings are stored in `/data` and survive restarts.
 

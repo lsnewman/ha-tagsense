@@ -1,5 +1,9 @@
 """One worker thread per camera source. A burst requested by any object on the
-camera is fetched once, decoded once and judged by every enabled object on it."""
+camera is fetched once, decoded once and judged by every enabled object on it.
+
+Each frame is analysed as soon as it arrives, so the burst can stop early when
+every object is already present and its first present_min_hits frames all hit.
+Misses and uncertain checks always fetch the full burst."""
 from __future__ import annotations
 
 import hashlib
@@ -55,7 +59,7 @@ class CameraWorker:
                     continue
                 enabled = [o for o in self.objects if o.settings.enabled]
             try:
-                burst = self.fetch_burst()
+                burst = self.fetch_burst(enabled)
                 for o in enabled:
                     o.process(due.get(o, SHARED), burst)
             except Exception:       # never let one bad check kill the worker
@@ -73,8 +77,11 @@ class CameraWorker:
             return self.last_frame
         return self.fetch()
 
-    def fetch_burst(self) -> Burst:
+    def fetch_burst(self, objects: list[TrackedObject] = ()) -> Burst:
+        """Fetch up to burst_size frames, analysing each for `objects` as it arrives."""
         b = Burst(requested=self.burst_size)
+        for o in objects:
+            o.begin_burst()
         for i in range(self.burst_size):
             if i and self.stop_event.wait(self.burst_interval_s):
                 break
@@ -88,6 +95,11 @@ class CameraWorker:
             b.hashes.add(hashlib.blake2b(frame.data, digest_size=16).digest())
             b.frames.append(frame)
             b.images.append(decode_jpeg(frame.data))
+            for o in objects:
+                o.analyse_frame(b.images[-1])
+            if objects and len(b.frames) < self.burst_size and all(o.satisfied() for o in objects):
+                log.debug("[%s] burst stopped after %d frames: all present", self.name, len(b.frames))
+                break
         self.fetch_failures_total += b.failures
         b.last_error = self.last_error
         b.fetch_failures_total = self.fetch_failures_total

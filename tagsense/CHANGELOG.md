@@ -2,6 +2,45 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.4.2
+
+- **Rejection alert.** When the object's tag is read but every read is
+  rejected by the shape gate in 3 checks in a row, a new *Tag rejected*
+  problem sensor turns on, a Home Assistant notification appears (one per
+  object, updated rather than duplicated, dismissed by itself once a read is
+  accepted or a clean check follows) and the panel shows a banner. The
+  message says why (too small or too skewed) and what to change if the object
+  really is there. Rejected reads still count as misses: they are not the
+  tag, and a repeating phantom must never hold the state at present.
+- **Reset learned position**: a button in the panel and on the HA device.
+  Use it after moving an object, e.g. further from the camera. The size gate
+  and position warnings stay off until 10 new hits are learned.
+- **Early burst exit.** When an object is already present and the first
+  `present_min_hits` frames all hit, the rest of the burst is skipped (about
+  60% fewer camera fetches). Misses and uncertain checks still fetch the full
+  burst. On a shared camera, every object must be satisfied.
+- **Tag aspect** diagnostic sensor (the worst edge ratio of the accepted reads
+  in a check), for calibrating `max_aspect` against real day and night data.
+  It is also shown in the panel, in the history and on the chart.
+- Panel: a **Last 24 hours** chart (hit rate, crop contrast, tag aspect
+  against the limit, and the reported state; kept across restarts), **State
+  changes** snapshots (the checked image at each state change; the last 20 are
+  kept), a **Fit to tag** button in the search-area editor, and **Export /
+  import** of objects and their settings as text.
+- Reads of other tag IDs are now labelled `ignored: id N (not this object's
+  tag)` instead of "phantom id N", so they no longer look as if they were
+  counted. The *Phantom decodes* sensor is renamed *Discarded decodes*; its
+  entity ID is unchanged.
+- Fixed: after changing a setting in the panel, the old retained MQTT command
+  could be replayed (and briefly applied) on the next start.
+- Removed the *Last check* sensor, which wrote to the logbook on every check.
+  The time is still the `last_check` attribute of *Status* and is shown in
+  the panel.
+- Removed the `objects` app option, which was only used to import objects
+  from 0.3.x. Upgrading from 0.3.x: go through 0.4.1 first, or add the
+  objects again in the panel.
+- aarch64 (Raspberry Pi 4/5) builds.
+
 ## 0.4.1
 
 - Print tag: SVG export sized in millimetres, with separate non-overlapping
