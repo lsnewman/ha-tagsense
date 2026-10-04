@@ -1,5 +1,8 @@
 # TagSense
 
+[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense)
+[![Open TagSense in my Home Assistant](https://my.home-assistant.io/badges/supervisor_addon.svg)](https://my.home-assistant.io/redirect/supervisor_addon/?addon=744e9206_tagsense)
+
 A Home Assistant app (formerly "add-on") that tells you whether something is
 in its usual place. Stick a printed AprilTag on it, such as a wheelie bin, a
 car, a chair or a garage door. TagSense grabs frames from a camera that can
@@ -9,13 +12,15 @@ objects, on one or more cameras, and each appears as its own device. A
 **TagSense panel** in the sidebar is where you add objects and draw each
 one's search area on a live camera frame.
 
+![The TagSense panel: drag the search area on a live frame, with the last check beside it](docs/panel-object.png)
+
 It is meant as a cheap, deterministic alternative to an image classifier
 (for example a Frigate custom model) for "is the bin out?" style questions.
 Each frame check is a few tens of milliseconds of CPU on a cropped region, and
 it either finds your specific tag or it doesn't.
 
 > **Status: early.** It was developed and tested with a wheelie bin on one
-> camera, in daylight. Night/IR performance is not yet known. See
+> camera, by day and at night under the camera's IR. It has had one user. See
 > [Limitations](#limitations).
 
 ## How it works
@@ -66,12 +71,15 @@ than after several polls.
 
 ## Installation
 
-1. In Home Assistant, open **Settings → Apps → App store → ⋮ → Repositories**
-   and add:
-   ```
-   https://github.com/lsnewman/ha-tagsense
-   ```
-2. Find **TagSense** in the store and click **Install**. The image is built on
+1. Click **Add repository** to add this repository to your Home Assistant:
+
+   [![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense)
+
+   Or open **Settings → Apps → App store → ⋮ → Repositories** and add
+   `https://github.com/lsnewman/ha-tagsense`.
+2. Find **TagSense** in the store (or click
+   [![Open TagSense in my Home Assistant](https://my.home-assistant.io/badges/supervisor_addon.svg)](https://my.home-assistant.io/redirect/supervisor_addon/?addon=744e9206_tagsense))
+   and click **Install**. The image is built on
    your machine, which takes a few minutes the first time.
 3. On the **Configuration** tab, set `go2rtc_url` if you will use go2rtc
    streams. Then start the app.
@@ -105,6 +113,9 @@ logged-in Home Assistant users can open it.
 - **Last 24 hours:** a chart of the hit rate, crop contrast and tag aspect
   (against `max_aspect`) in 10-minute steps, over a band showing the reported
   state. It is kept across restarts. Hover for the details of each step.
+
+  ![24-hour chart: hit rate, crop contrast and tag aspect, over the reported state](docs/panel-chart.png)
+
 - **State changes:** the checked image each time the reported state changed
   (the last 20 are kept).
 - **Tag rejected banner:** shown when the tag was read but rejected in 3
@@ -280,9 +291,11 @@ learned.
 
 ## Limitations
 
-- **Night/IR is untested.** All tuning used daytime frames, plus synthetic
-  darkened copies. Watch Crop brightness and Crop contrast next to any missed
-  detections at night.
+- **Night/IR is tested on one camera only.** On the development camera, IR
+  night frames have about a fifth of the daytime crop contrast, and 3-5 of 5
+  frames hit instead of 5 of 5, which is still enough. Rain, fog and
+  headlight glare have not been specifically tested. Watch Crop brightness
+  and Crop contrast next to any missed detections at night.
 - **Thin decode margin.** A small tag seen at a steep angle is near the limit
   of what the detector can read. A larger print helps more than any setting.
 - **Tested on one setup:** a TP-Link Tapo camera through Frigate's go2rtc,
@@ -336,11 +349,11 @@ that when deciding whether to rely on it.
   calibration, and installed and tested each release on their own Home
   Assistant system.
 - **How the numbers were checked:** thresholds such as the sanity ratio and
-  the shape gate were set from measurements on real frames (on a small set,
-  daytime only), not from the AI's reasoning alone. The test suite runs
+  the shape gate were set from measurements on real frames (day and IR
+  night, from one camera), not from the AI's reasoning alone. The test suite runs
   against both synthetic and real frames.
 - **What has not been done:** there has been no independent human code review
-  or security review. Testing covers one camera and daytime conditions.
+  or security review. Testing covers one camera, by day and at night.
 
 Treat it as experimental software. Read the code before you rely on it for
 anything that matters.

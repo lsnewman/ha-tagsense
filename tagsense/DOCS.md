@@ -11,11 +11,11 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
   Frigate classifier) running alongside TagSense for a few weeks, including
   the situations you care about (night, rain, the times the object moves). Compare the two before you base automations on TagSense
   or retire the other detector.
-- **Night/IR calibration is provisional.** The sanity thresholds and detector
-  settings were tuned on daytime frames, plus synthetic darkened copies. Real
-  IR, dusk/dawn, headlight, glare and rain frames have not been tested. Watch
-  the *Crop brightness* and *Crop contrast* diagnostics next to any missed
-  detections at night.
+- **Night/IR is tested on one camera.** IR night frames worked on the
+  development camera (lower contrast, 3-5 of 5 frames hit). Rain, fog and
+  headlight glare have not been specifically tested. Watch the *Crop
+  brightness* and *Crop contrast* diagnostics next to any missed detections
+  at night.
 - **Compare the CPU cost.** Each check fetches `burst_size` frames and runs
   detection on the crop. Use the *Fetch time* and *Detect time* diagnostics,
   plus the app's CPU graph, to compare against what it replaces.
