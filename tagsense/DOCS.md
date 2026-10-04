@@ -243,7 +243,9 @@ either way.
 
 Open **Access** in the panel and add a **scanner**: the doorbell camera (a
 go2rtc stream or an HA camera), the area of the frame where a visitor holds
-up their phone, and how long a scan lasts (default 20 s). Each scanner is a
+up their phone, and how long a scan lasts (default 20 s). After adding it,
+its page has the same scan-area editor as an object: drag a box on a live
+frame (any readable code in the frame is blacked out there too). Each scanner is a
 device, **TagSense Access `<name>`**, with these entities:
 
 - **Scan** (button): starts a scan window. Scanning only happens in these

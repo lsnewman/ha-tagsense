@@ -268,29 +268,11 @@ function detail(id, isRefresh) {
 
     <div class="cols">
       <div class="card">
-        <div class="row"><h3 style="flex:1;margin:0">Search area</h3>
-          <button onclick="loadFrame(true)">Refresh frame</button>
-          <button onclick="setCrop([0,0,1,1])">Whole frame</button>
-          <button id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>
-          <button onclick="setCrop(savedCrop())">Undo</button>
-          <button class="primary" id="crop-save" onclick="saveCrop()" disabled>Save</button></div>
-        <p class="muted small">Drag the box to move it, drag a corner to resize, or drag on the image to draw a new one.
-          It must cover every spot where the object might be.</p>
-        <div class="editor" id="editor"><div class="loading" id="frame-loading">Fetching a frame…</div>
-          <img id="frame" alt="" style="display:none">
-          <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
-            <path id="dim" fill="rgba(0,0,0,.6)" fill-rule="evenodd" d=""/><g id="marks"></g></svg>
-          <div class="crop" id="crop" style="display:none">
-            <div class="handle h-nw" data-h="nw"></div><div class="handle h-ne" data-h="ne"></div>
-            <div class="handle h-sw" data-h="sw"></div><div class="handle h-se" data-h="se"></div></div>
-        </div>
-        <div class="legend small muted" style="margin-top:8px">
-          <span><i style="background:var(--crop)"></i>search area</span>
-          <span><i style="background:var(--quad)"></i>last detection</span>
+        ${editorHtml("Search area", "It must cover every spot where the object might be.",
+          `<button type="button" id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>`,
+          `<span><i style="background:var(--quad)"></i>last detection</span>
           <span><i style="background:var(--usual)"></i>usual position (learned)</span>
-          <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>
-          <span id="crop-values"></span></div>
-        <div class="error" id="crop-error"></div>
+          <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>`)}
       </div>
 
       <div class="stack">
@@ -348,6 +330,7 @@ function detail(id, isRefresh) {
     <div class="card"><div class="row"><span class="muted small" style="flex:1">Deleting removes this object, its entities and its saved state.</span>
       <button class="danger" onclick="deleteObject('${id}')">Delete ${esc(o.name)}</button></div></div>
   </div>`;
+  editorCtx = objectEditor(id);
   initEditor(o);
   initPrint(o);
   updateDetail(o);
@@ -595,9 +578,49 @@ function drawChart(pts) {
 window.addEventListener("resize", () => { if (chartPts.length) drawChart(chartPts); });
 
 // ---------- crop editor ---------------------------------------------------
+// One editor, used by the object page and the access scanner page. The page sets
+// editorCtx: { saved() -> [x1,y1,x2,y2], frameUrl(fresh), save(crop) (async), overlay() }.
 let crop = [0, 0, 1, 1];
-const savedCrop = () => { const s = objById(currentId())?.settings || {};
-  return [s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2].map(Number); };
+let editorCtx = null;
+const savedCrop = () => editorCtx ? editorCtx.saved() : [0, 0, 1, 1];
+function objectEditor(id) {
+  return {
+    saved: () => { const s = objById(id)?.settings || {};
+      return [s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2].map(Number); },
+    frameUrl: fresh => `api/objects/${id}/frame.jpg?max_age=${fresh ? 0 : 120}&t=${Date.now()}`,
+    save: async ([x1, y1, x2, y2]) => {
+      await api(`objects/${id}/settings`, { method: "PATCH",
+        body: { crop_x1: x1, crop_y1: y1, crop_x2: x2, crop_y2: y2 } });
+      editorDirty = false;
+      await refresh();
+      checkNow(id, document.getElementById("d-check"));
+    },
+    overlay: () => { const o = objById(id); if (o) drawOverlay(o); },
+  };
+}
+// The crop editor's markup. `extra` adds buttons (e.g. Fit to tag), `legend` legend entries.
+function editorHtml(title, help, extra = "", legend = "") {
+  return `<div class="row"><h3 style="flex:1;margin:0">${title}</h3>
+      <button type="button" onclick="loadFrame(true)">Refresh frame</button>
+      <button type="button" onclick="setCrop([0,0,1,1])">Whole frame</button>
+      ${extra}
+      <button type="button" onclick="setCrop(savedCrop())">Undo</button>
+      <button type="button" class="primary" id="crop-save" onclick="saveCrop()" disabled>Save</button></div>
+    <p class="muted small">Drag the box to move it, drag a corner to resize, or drag on the image to draw a new one.
+      ${help}</p>
+    <div class="editor" id="editor"><div class="loading" id="frame-loading">Fetching a frame…</div>
+      <img id="frame" alt="" style="display:none">
+      <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
+        <path id="dim" fill="rgba(0,0,0,.6)" fill-rule="evenodd" d=""/><g id="marks"></g></svg>
+      <div class="crop" id="crop" style="display:none">
+        <div class="handle h-nw" data-h="nw"></div><div class="handle h-ne" data-h="ne"></div>
+        <div class="handle h-sw" data-h="sw"></div><div class="handle h-se" data-h="se"></div></div>
+    </div>
+    <div class="legend small muted" style="margin-top:8px">
+      <span><i style="background:var(--crop)"></i>${title.toLowerCase()}</span>${legend}
+      <span id="crop-values"></span></div>
+    <div class="error" id="crop-error"></div>`;
+}
 const clamp = v => Math.min(1, Math.max(0, v));
 
 function setCrop(c, fromServer = false) {
@@ -667,15 +690,17 @@ function tagArrow(corners, color, dashed) {
 }
 
 function loadFrame(fresh) {
-  const id = currentId(), img = document.getElementById("frame"), loading = document.getElementById("frame-loading");
-  if (!img) return;
+  const img = document.getElementById("frame"), loading = document.getElementById("frame-loading");
+  if (!img || !editorCtx) return;
+  const ctx = editorCtx;
   loading.style.display = ""; loading.textContent = "Fetching a frame…";
   const next = new Image();
   next.onload = () => { img.src = next.src; img.style.display = ""; loading.style.display = "none";
     document.getElementById("crop").style.display = "";
-    const o = objById(id); if (o) drawOverlay(o); };
+    setCrop(crop, !editorDirty);
+    if (ctx.overlay) ctx.overlay(); };
   next.onerror = () => { loading.textContent = "Could not fetch a frame from the camera. Check the app log."; };
-  next.src = `api/objects/${id}/frame.jpg?max_age=${fresh ? 0 : 120}&t=${Date.now()}`;
+  next.src = ctx.frameUrl(fresh);
 }
 
 function initEditor(o) {
@@ -711,17 +736,11 @@ function initEditor(o) {
 }
 
 async function saveCrop() {
-  const id = currentId(), err = document.getElementById("crop-error"), btn = document.getElementById("crop-save");
+  const err = document.getElementById("crop-error"), btn = document.getElementById("crop-save");
   err.textContent = ""; btn.disabled = true;
   const r = v => Math.round(v * 100) / 100;
-  const [x1, y1, x2, y2] = crop.map(r);
-  try {
-    await api(`objects/${id}/settings`, { method: "PATCH",
-      body: { crop_x1: x1, crop_y1: y1, crop_x2: x2, crop_y2: y2 } });
-    editorDirty = false;
-    await refresh();
-    checkNow(id, document.getElementById("d-check"));
-  } catch (e) { err.textContent = e.message; btn.disabled = false; }
+  try { await editorCtx.save(crop.map(r)); }
+  catch (e) { err.textContent = e.message; btn.disabled = false; }
 }
 
 // ---------- tag families ---------------------------------------------------
@@ -935,7 +954,7 @@ async function scannerForm(id) {
     crop_x1: 0, crop_y1: 0, crop_x2: 1, crop_y2: 1, window_s: 20, frame_interval_s: 0.3, debug_frames: false };
   const num = (k, label, min, max, step) => `<div><label for="sf-${k}">${label}</label>
     <input id="sf-${k}" type="number" min="${min}" max="${max}" step="${step}" value="${v[k]}" style="max-width:110px"></div>`;
-  $main.innerHTML = `<div class="card" style="max-width:600px">
+  $main.innerHTML = `<div class="${o ? "cols" : ""}"><div class="card" style="max-width:600px">
     <h2>${o ? "Edit " + esc(o.name) : "Add scanner"}</h2>
     <form id="sf" autocomplete="off">
       <label for="sf-name">Name</label>
@@ -951,9 +970,7 @@ async function scannerForm(id) {
       <label for="sf-entity">Home Assistant camera</label>
       <input id="sf-entity" list="sf-entities" value="${esc(v.camera_entity)}" placeholder="camera.doorbell"><datalist id="sf-entities"></datalist>
       <label class="inline"><input type="checkbox" id="sf-fallback" ${v.fallback ? "checked" : ""}> If this camera fails, try the other source</label>
-      <label>Scan area (fractions of the frame)</label>
-      <div class="row">${num("crop_x1", "x1", 0, 1, 0.01)}${num("crop_y1", "y1", 0, 1, 0.01)}${num("crop_x2", "x2", 0, 1, 0.01)}${num("crop_y2", "y2", 0, 1, 0.01)}</div>
-      <div class="hint">Where a visitor holds up a phone. A tighter area is faster, but codes must be about 100 px across in the full frame to read.</div>
+      ${o ? "" : `<div class="hint" style="margin-top:10px">After adding the scanner you can draw its scan area on a live frame.</div>`}
       <div class="row">${num("window_s", "Scan window (s)", 5, 120, 1)}${num("frame_interval_s", "Pause between frames (s)", 0, 5, 0.1)}</div>
       <label class="inline"><input type="checkbox" id="sf-debug" ${v.debug_frames ? "checked" : ""}> Keep raw scan frames for testing (last 50, deleted after 24 h)</label>
       <div class="hint">Raw frames can contain readable codes: leave this off except while testing.</div>
@@ -961,7 +978,17 @@ async function scannerForm(id) {
       <div class="row" style="margin-top:14px"><button class="primary" type="submit">${o ? "Save" : "Add"}</button>
         <a class="btn" href="#/access">Cancel</a>
         ${o ? `<span class="spacer"></span><button type="button" class="danger" onclick="deleteScanner('${o.id}')">Delete</button>` : ""}</div>
-    </form></div>`;
+    </form></div>
+    ${o ? `<div class="card" style="order:-1">${editorHtml("Scan area",
+      "Cover where a visitor holds up a phone. A tighter area is faster; a code must be about 100 px across in the full frame to read. Any readable code in the frame is blacked out here.")}</div>` : ""}
+    </div>`;
+  if (o) {
+    editorCtx = scannerEditor(o.id);
+    editorDirty = false;
+    setCrop(savedCrop(), true);
+    initEditor(o);
+    loadFrame(true);
+  }
   api("sources").then(src => {
     document.getElementById("sf-streams").innerHTML = src.go2rtc.map(s => `<option value="${esc(s)}">`).join("");
     document.getElementById("sf-entities").innerHTML = src.ha_cameras.map(c => `<option value="${esc(c.entity_id)}">${esc(c.name)}</option>`).join("");
@@ -972,15 +999,28 @@ async function scannerForm(id) {
     const body = { name: val("name").trim(), source: document.querySelector("input[name=sf-src]:checked").value,
       go2rtc_stream: val("stream").trim(), camera_entity: val("entity").trim(),
       fallback: document.getElementById("sf-fallback").checked, debug_frames: document.getElementById("sf-debug").checked };
-    for (const k of ["crop_x1", "crop_y1", "crop_x2", "crop_y2", "window_s", "frame_interval_s"]) body[k] = +val(k);
+    for (const k of ["window_s", "frame_interval_s"]) body[k] = +val(k);
     if (!o) body.id = val("id").trim();
     try {
-      await (o ? api(`access/scanners/${o.id}`, { method: "PUT", body }) : api("access/scanners", { method: "POST", body }));
-      access = null; location.hash = "#/access";
+      const r = await (o ? api(`access/scanners/${o.id}`, { method: "PUT", body }) : api("access/scanners", { method: "POST", body }));
+      access = null; location.hash = o ? "#/access" : `#/access/edit/${r.id}`;
     } catch (err) {
       const box = document.getElementById("sf-error"); box.textContent = err.message; box.style.display = "";
     }
   });
+}
+function scannerEditor(id) {
+  const cur = () => (access && access.scanners.find(s => s.id === id)) || {};
+  return {
+    saved: () => { const s = cur(); return [s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2].map(Number); },
+    frameUrl: () => `api/access/scanners/${id}/frame.jpg?t=${Date.now()}`,
+    save: async ([x1, y1, x2, y2]) => {
+      await api(`access/scanners/${id}`, { method: "PUT", body: { crop_x1: x1, crop_y1: y1, crop_x2: x2, crop_y2: y2 } });
+      editorDirty = false;
+      access = await api("access");
+      setCrop(savedCrop(), true);
+    },
+  };
 }
 async function deleteScanner(id) {
   if (!confirm("Delete this scanner and its Home Assistant entities?")) return;
