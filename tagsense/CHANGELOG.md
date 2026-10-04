@@ -14,6 +14,16 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   tested on synthetic frames only. Trade-off: bigger grids resist phantoms
   far better (on 2000 random textures: tag16h5 40 false decodes, tag25h9 1,
   the 36-bit families none), but need about 1.25x the printed size.
+- **Access codes, preview (off by default).** A new *Access* page in the
+  panel manages QR **scanners**, for example the doorbell camera, each with
+  its own source, scan area and scan window. A *Scan* button (pressed by a
+  doorbell automation) scans for a few seconds. In this build a scan only
+  reports *that* a code was read: a `qr_seen` event with the code's length
+  and a fingerprint, never its content. Images have the code blacked out.
+  Verification of signed codes comes next. Access is turned on with
+  `access_enabled` and needs its own MQTT login (`access_mqtt_username` /
+  `access_mqtt_password`) plus a broker ACL (see the docs). The bin sensor
+  does not load or touch any of it while it is off.
 - New `app/sweep.py` (development): per-family decode margin on synthetic
   frames and on real frames with the tag swapped in, phantom counts, and a
   one-at-a-time ablation of the tuned detector parameters. The results and

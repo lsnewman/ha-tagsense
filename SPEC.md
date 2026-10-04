@@ -242,17 +242,114 @@ place them on the lid, and capture day and IR-night frames into
 `test-frames/<family>/{present,absent}`. Then run `app.check --family` and
 `app.sweep` on them. Until then the docs say "untested on a real camera".
 
-## Access codes (0.5.0, planned)
+## Access codes (0.5.0)
 
-Design under review; not built yet. Summary:
-- A separate `app/access/` module, off by default, sharing no state with the
-  bin logic.
-- It has its own MQTT connection with dedicated, required credentials, under
-  `tagsense/access/#`, protected by a broker ACL.
-- A doorbell press gates a short scan window.
-- Codes are signed: rotating per-person codes for permanent access, and
-  single-use static codes with a mandatory expiry.
-- They are verified in one place inside the app, and the app fails closed.
-- TagSense only emits events and never unlocks anything.
+Purpose: a visitor presses the doorbell and holds up a code, TagSense
+verifies it and emits an event. **TagSense never unlocks anything**: Home
+Assistant automations decide. The app holds no lock credentials and has no
+path to any lock.
 
-This section will hold the full design and threat model once it is built.
+### Separation from the bin sensor
+
+- `app/access/` is imported by `main.py` only when `access_enabled` is on.
+  A test checks that no `app.access*` module is loaded otherwise.
+- It shares no state with the bin logic:
+  - its own store (`/data/access/`, mode 0700),
+  - its own frame sources and threads (one `Scanner` per camera, even when a
+    bin object uses the same camera),
+  - its own MQTT connection.
+
+  It reuses only stateless helpers: the frame fetchers, JPEG decoding and
+  crop maths.
+- If it cannot start (missing login, broker refused), it stays off and the
+  panel shows why. The bin sensor runs regardless.
+- Off: no access connection, no subscriptions, and `/api/access/*` returns
+  404.
+
+### MQTT and the threat it answers
+
+- **The shared login.** The Supervisor's MQTT login (`addons`) is shared by
+  every app. Anything that can publish to an access event topic can fake a
+  "verified" event, so access uses a **separate connection with its own
+  required login** (`access_mqtt_username`/`access_mqtt_password`, client ID
+  `tagsense-access`). It refuses to run with the same username as the main
+  connection.
+- **The ACL.** A broker ACL (DOCS.md) makes these topics writable only by
+  that login:
+  - `tagsense/access/#`
+  - the discovery topics, under the node ID `tagsense_access`
+    (`homeassistant/<component>/tagsense_access/<sid>_<key>/config`)
+
+  Without the discovery rule, another app could republish our entity's
+  config with a `state_topic` it controls.
+- **Topics:**
+  - `tagsense/access/availability` (LWT)
+  - `<sid>/event` (event entity; **never retained**, so a restart cannot
+    replay it)
+  - `<sid>/image` (not retained)
+  - `<sid>/scanning` (retained)
+  - `<sid>/cmd/scan` (button)
+
+  A retained message on a command topic is ignored, so a stale retained
+  press can never start a scan.
+- **HA's own login** (`homeassistant`) keeps read/write on everything: it
+  must press Scan and read events, and Mosquitto's `deny` cannot be
+  write-only. HA is trusted anyway, since it is what controls the lock.
+
+### Scanning (stage 2)
+
+- **Trigger:** the Scan button (from a doorbell automation) or the panel
+  opens a window of `window_s` (5-120 s, default 20). A press during an open
+  window extends it. Frames are fetched `frame_interval_s` apart (default
+  0.3 s) and decoded in the scanner's crop. There is no continuous scanning.
+- **Decoding:** crop, grey, 2x cubic upscale, then OpenCV `QRCodeDetector`,
+  falling back to `QRCodeDetectorAruco`. WeChat QR is contrib-only, so it is
+  not available.
+- **End of the window:** it closes at the first read. Stage 3 will close it
+  on a verified code instead.
+- **The payload never leaves the scanner:**
+  - Events and logs carry its length and an 8-hex fingerprint (the start of
+    its SHA-256).
+  - Images published to HA, and the panel's live frame, have the decoded code
+    blacked out (the quad grown 1.25x).
+  - Raw frames are kept only with the per-scanner `debug_frames` setting:
+    the last 50, deleted after 24 h, in `/data/access/debug/`.
+
+### QR reading: measurements
+
+`python -m app.sweep --qr` uses synthetic 1280x720 frames with a tilted
+code, 10 trials per cell, on 2026-10-04:
+
+| Condition | 2 px/module | 2.5 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| plain | 6-10/10 | 6-8 | 8-10 | 10 | 10 |
+| blur (σ 1) | 0 | 0 | 7-9 | 10 | 10 |
+| dim (IR-like) | 6-9 | 7-10 | 10 | 10 | 10 |
+| screen glare | 0 | 0 | 3 | 4-5 | 9 |
+
+(Ranges cover a 25-character payload, QR version 1, and a 45-character
+payload, version 2.)
+
+- The decode takes a median of 38 ms on a whole frame.
+- A code therefore needs about 4-5 px per module, i.e. about 100-130 px
+  across in the frame.
+- **Glare is the limiting case**, which is why the docs tell visitors to turn
+  the screen brightness up and tilt the phone.
+- Keeping signed payloads within version 2 matters.
+- **Not yet measured on the real doorbell:** distance, day and night. Use
+  `debug_frames` to collect `test-frames/qr/`, then run `app.sweep --qr
+  ../test-frames`.
+
+### Signed codes (stage 3, next)
+
+Agreed design (see the 0.5.0 plan):
+- **Rotating per-person codes:** TOTP-style, 30-60 s steps, current and
+  previous step accepted, RFC 6238 replay protection, shown on an ingress
+  "My pass" page tied to the HA user.
+- **Static codes:** signed (HMAC-SHA256, 80-bit tag), with a server-side
+  record. They need an expiry **or** a number of uses (at least one); with
+  no expiry, a backstop expiry applies (90 days by default, at most 1 year).
+  An optional start time is allowed.
+- **Verification:** in one function that fails closed.
+- **Lockout:** per scanner and persisted.
+- **Issue and revoke:** in the panel only.

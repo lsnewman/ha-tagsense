@@ -214,6 +214,109 @@ families can share a camera, even with the same ID. If you switch an
 existing object to a new tag, press *Reset learned position* once the new
 tag is in place.
 
+## Access codes at the door (in development, off by default)
+
+**This is a preview.** In this version a scanner only reports that it *read*
+a QR code. It reports the code's length and a short fingerprint, never what
+the code says. Nothing is verified yet: signed access codes come in a later
+build. **TagSense never unlocks anything.** It only emits events, and your
+Home Assistant automations decide what to do with them.
+
+### Turning it on
+
+Access needs **its own MQTT login**. The login Home Assistant gives apps is
+shared by every app, so if TagSense used it, any other app could publish a
+fake access event.
+
+1. In the **Mosquitto broker** app, add a login under *Logins*, for example
+   `tagsense_access` with a long random password.
+2. Restrict who may write the access topics (see the ACL below).
+3. On TagSense's **Configuration** tab, set `access_enabled` to on, and set
+   `access_mqtt_username` and `access_mqtt_password` to the new login. Then
+   restart TagSense.
+
+If the login is missing, or is the same as the shared app login, access stays
+off and the panel's **Access** page says why. The bin sensor is unaffected
+either way.
+
+### Scanners
+
+Open **Access** in the panel and add a **scanner**: the doorbell camera (a
+go2rtc stream or an HA camera), the area of the frame where a visitor holds
+up their phone, and how long a scan lasts (default 20 s). Each scanner is a
+device, **TagSense Access `<name>`**, with these entities:
+
+- **Scan** (button): starts a scan window. Scanning only happens in these
+  windows, never continuously.
+- **Code** (event): `qr_seen` (attributes `fingerprint`, `length`,
+  `decoder`, `frames`, `scanned_at`) or `scan_timeout` (no code before the
+  window ended). Events are never retained.
+- **Scanning** (binary sensor): on while a window is open.
+- **Last scan** (image): the scan area at the end of the last window, with
+  any code blacked out.
+
+A doorbell press starts the scan:
+
+```yaml
+automation:
+  - alias: "Doorbell: scan for an access code"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.doorbell_doorbell   # your doorbell's press sensor
+        to: "on"
+    actions:
+      - action: button.press
+        target:
+          entity_id: button.tagsense_access_front_door_scan
+```
+
+**Reading distance:** the code has to be large in the frame, about 100 px
+across, or 4-5 px per QR module. Synthetic tests read it reliably at that
+size, plain, blurred and dim. **Screen glare is the main problem**: ask
+visitors to turn the screen brightness up and tilt the phone away from
+lights. Real doorbell distances are not yet tested. *Keep raw scan frames*
+(per scanner, off by default) saves up to 50 frames for 24 h so they can be
+checked; turn it off afterwards, because the frames can contain readable
+codes.
+
+### Broker ACL (required)
+
+Only the access login may write `tagsense/access/#` and the access
+discovery topics (`homeassistant/+/tagsense_access/#`). The Mosquitto app
+reads ACLs from `/share/mosquitto`:
+
+1. In the Mosquitto app's configuration, set `customize` to
+   `active: true, folder: mosquitto`.
+2. Create `/share/mosquitto/acl.conf` containing
+   `acl_file /share/mosquitto/accesscontrollist`.
+3. Create `/share/mosquitto/accesscontrollist`:
+
+```
+# Home Assistant itself: everything (it presses Scan and reads the events).
+user homeassistant
+topic readwrite #
+
+# The login shared by all apps (including TagSense's bin sensor):
+# everything except the access topics.
+user addons
+topic readwrite #
+topic deny tagsense/access/#
+topic deny homeassistant/+/tagsense_access/#
+
+# TagSense's access login: only its own topics.
+user tagsense_access
+topic readwrite tagsense/access/#
+topic readwrite homeassistant/+/tagsense_access/#
+topic read homeassistant/status
+```
+
+Add a block like the `addons` one for every other login in your Mosquitto
+*Logins* list (for example, ESPHome devices or zigbee2mqtt). With an ACL
+file, a login that has no rules can do nothing. In Mosquitto, `deny` wins
+over the broader `readwrite #`. Restart the Mosquitto app, then **test**:
+with the `addons` login, publish to `tagsense/access/test/event`. A client
+subscribed with the `homeassistant` login must not receive it.
+
 ## Tag and print notes
 
 - Use the object's family (tag16h5 by default), with a white quiet zone

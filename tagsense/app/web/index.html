@@ -108,6 +108,7 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
   <h1><a href="#/" style="color:inherit">TagSense</a></h1>
   <span class="muted small" id="version"></span>
   <span class="spacer"></span>
+  <a class="btn" href="#/access" id="access-link" style="display:none">Access</a>
   <a class="btn" href="#/new">Add object</a>
 </header>
 <main id="main"><div class="loading">Loading…</div></main>
@@ -146,8 +147,13 @@ const chip = (st, reason) => `<span class="chip ${esc(st)}">${esc(st)}</span>
 const objById = id => state.objects.find(o => o.id === id);
 function fmtNum(v, d = 1) { return v === null || v === undefined ? "–" : (typeof v === "number" ? v.toFixed(d) : esc(v)); }
 
+function showAccessLink() {
+  const a = state.access || {};
+  document.getElementById("access-link").style.display = a.enabled || a.error ? "" : "none";
+}
 async function refresh() {
   try { state = await api("state"); } catch (e) { return; }
+  showAccessLink();
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
   render(true);
 }
@@ -164,6 +170,9 @@ function render(isRefresh) {
   if (h === "/new") return isRefresh ? null : objectForm(null);
   if ((m = h.match(/^\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : objectForm(m[1]);
   if ((m = h.match(/^\/obj\/([a-z0-9_]+)$/))) return detail(m[1], isRefresh);
+  if (h === "/access") return accessPage(isRefresh);
+  if (h === "/access/new") return isRefresh ? null : scannerForm(null);
+  if ((m = h.match(/^\/access\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : scannerForm(m[1]);
   location.hash = "#/";
 }
 
@@ -848,9 +857,141 @@ async function objectForm(id) {
   });
 }
 
+// ---------- access: QR scanners ---------------------------------------------
+let access = null;
+const EVENT_TEXT = { qr_seen: "QR code read", scan_timeout: "no code before the window ended" };
+async function accessPage(isRefresh) {
+  const a = state.access || {};
+  if (!a.enabled) {
+    $main.innerHTML = `<div class="card" style="max-width:640px"><h2>Access</h2>
+      ${a.error ? `<div class="notice alert">The access feature did not start: ${esc(a.error)}</div>` : ""}
+      <p class="muted">Access is turned on with <b>access_enabled</b> and its own MQTT login on the app's Configuration tab. See the Documentation tab.</p></div>`;
+    return;
+  }
+  try { access = await api("access"); } catch (e) { if (!isRefresh) $main.innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+  if (isRefresh && document.getElementById("acc-root")) {
+    for (const sc of access.scanners) {
+      const el = document.getElementById("acc-" + sc.id);
+      if (el) el.outerHTML = scannerCard(sc);
+    }
+    return;
+  }
+  $main.innerHTML = `<div id="acc-root">
+    <div class="row" style="margin-bottom:12px"><h2 style="flex:1;margin:0">Access scanners</h2>
+      <a class="btn" href="#/access/new">Add scanner</a></div>
+    ${access.mqtt_connected ? "" : `<div class="notice alert">The access MQTT connection is down: check access_mqtt_username / access_mqtt_password and the broker log.</div>`}
+    <div class="notice small">Stage 2 preview: a scan only reports that a QR code was read (its length and a fingerprint), never what it says. Nothing is verified yet, and TagSense never unlocks anything.</div>
+    ${access.scanners.length ? access.scanners.map(scannerCard).join("") :
+      `<div class="card"><p class="muted">No scanners yet. Add the doorbell camera as a scanner, then trigger <b>Scan</b> from a doorbell-press automation.</p></div>`}
+  </div>`;
+}
+function scannerCard(sc) {
+  const last = sc.events[0];
+  const src = sc.source === "go2rtc" ? "go2rtc " + sc.go2rtc_stream : sc.camera_entity;
+  const crop = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2];
+  return `<div class="card" id="acc-${esc(sc.id)}" style="margin-bottom:16px">
+    <div class="row"><h2 style="flex:1">${esc(sc.name)}</h2>
+      ${sc.scanning ? `<span class="chip present">scanning</span>` : `<span class="chip absent">idle</span>`}</div>
+    <div class="muted small">${esc(src)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
+    ${sc.last_error ? `<div class="hint">Last fetch error: ${esc(sc.last_error)}</div>` : ""}
+    <div class="row" style="margin-top:8px">
+      <button class="primary" onclick="accessScan('${sc.id}', this)" ${sc.scanning ? "disabled" : ""}>Scan now</button>
+      <button onclick="accessFrame('${sc.id}')">Show live frame</button>
+      <a class="btn" href="#/access/edit/${sc.id}">Edit</a>
+      ${sc.debug_frames_saved ? `<a class="btn" href="api/access/scanners/${sc.id}/debug.zip">Download ${sc.debug_frames_saved} saved frames</a>` : ""}</div>
+    <div class="cols" style="margin-top:12px">
+      <div>
+        <div id="acc-frame-${esc(sc.id)}" style="position:relative;display:none"></div>
+        ${sc.has_image ? `<img alt="Last scan (code blacked out)" style="max-width:100%;border-radius:6px"
+           src="api/access/scanners/${sc.id}/last.jpg?t=${encodeURIComponent(last ? last.scanned_at : "")}">
+           <div class="hint">Last scan, cropped, with any code blacked out.</div>` : `<div class="muted small">No scan yet.</div>`}
+      </div>
+      <div><h3>Recent events</h3>
+        ${sc.events.length ? `<table class="small">${sc.events.map(e => `<tr>
+          <td>${ago(e.scanned_at)}</td><td>${esc(EVENT_TEXT[e.event_type] || e.event_type)}${e.fingerprint
+            ? ` <span class="muted">(${esc(e.fingerprint)}, ${e.length} chars, ${esc(e.decoder)}, frame ${e.frames})</span>`
+            : ` <span class="muted">(${e.frames} frames${e.fetch_failures ? ", " + e.fetch_failures + " failed" : ""})</span>`}</td></tr>`).join("")}</table>`
+          : `<div class="muted small">None since the app started.</div>`}</div>
+    </div></div>`;
+}
+async function accessScan(id, btn) {
+  btn.disabled = true;
+  try { await api(`access/scanners/${id}/scan`, { method: "POST" }); } catch (e) { alert(e.message); }
+  setTimeout(refresh, 500);
+}
+function accessFrame(id) {
+  const sc = access.scanners.find(s => s.id === id), box = document.getElementById("acc-frame-" + id);
+  const [x1, y1, x2, y2] = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2].map(v => +v * 100);
+  box.style.display = "";
+  box.innerHTML = `<img alt="Live frame" style="width:100%;border-radius:6px;display:block" src="api/access/scanners/${id}/frame.jpg?t=${Date.now()}"
+      onerror="this.parentNode.innerHTML='<div class=&quot;notice&quot;>Could not fetch a frame.</div>'">
+    <div style="position:absolute;left:${x1}%;top:${y1}%;width:${x2 - x1}%;height:${y2 - y1}%;border:2px solid #2ecc71;box-sizing:border-box;pointer-events:none"></div>
+    <div class="hint">Live frame with the scan area in green (a readable code is blacked out here too).</div>`;
+}
+async function scannerForm(id) {
+  if (!access) { try { access = await api("access"); } catch (e) { location.hash = "#/access"; return; } }
+  const o = id ? access.scanners.find(s => s.id === id) : null;
+  const v = o || { name: "", source: "go2rtc", go2rtc_stream: "", camera_entity: "", fallback: false,
+    crop_x1: 0, crop_y1: 0, crop_x2: 1, crop_y2: 1, window_s: 20, frame_interval_s: 0.3, debug_frames: false };
+  const num = (k, label, min, max, step) => `<div><label for="sf-${k}">${label}</label>
+    <input id="sf-${k}" type="number" min="${min}" max="${max}" step="${step}" value="${v[k]}" style="max-width:110px"></div>`;
+  $main.innerHTML = `<div class="card" style="max-width:600px">
+    <h2>${o ? "Edit " + esc(o.name) : "Add scanner"}</h2>
+    <form id="sf" autocomplete="off">
+      <label for="sf-name">Name</label>
+      <input id="sf-name" required maxlength="60" value="${esc(v.name)}" placeholder="Front door">
+      ${o ? `<div class="hint">ID: <b>${esc(o.id)}</b></div>` : `<label for="sf-id">ID <span class="muted">(optional)</span></label>
+        <input id="sf-id" pattern="[a-z0-9_]{1,40}" placeholder="made from the name">`}
+      <label>Camera source</label>
+      <div class="row">
+        <label class="inline"><input type="radio" name="sf-src" value="go2rtc" ${v.source === "go2rtc" ? "checked" : ""}> go2rtc stream</label>
+        <label class="inline"><input type="radio" name="sf-src" value="ha_camera" ${v.source === "ha_camera" ? "checked" : ""}> Home Assistant camera</label></div>
+      <label for="sf-stream">go2rtc stream</label>
+      <input id="sf-stream" list="sf-streams" value="${esc(v.go2rtc_stream)}"><datalist id="sf-streams"></datalist>
+      <label for="sf-entity">Home Assistant camera</label>
+      <input id="sf-entity" list="sf-entities" value="${esc(v.camera_entity)}" placeholder="camera.doorbell"><datalist id="sf-entities"></datalist>
+      <label class="inline"><input type="checkbox" id="sf-fallback" ${v.fallback ? "checked" : ""}> If this camera fails, try the other source</label>
+      <label>Scan area (fractions of the frame)</label>
+      <div class="row">${num("crop_x1", "x1", 0, 1, 0.01)}${num("crop_y1", "y1", 0, 1, 0.01)}${num("crop_x2", "x2", 0, 1, 0.01)}${num("crop_y2", "y2", 0, 1, 0.01)}</div>
+      <div class="hint">Where a visitor holds up a phone. A tighter area is faster, but codes must be about 100 px across in the full frame to read.</div>
+      <div class="row">${num("window_s", "Scan window (s)", 5, 120, 1)}${num("frame_interval_s", "Pause between frames (s)", 0, 5, 0.1)}</div>
+      <label class="inline"><input type="checkbox" id="sf-debug" ${v.debug_frames ? "checked" : ""}> Keep raw scan frames for testing (last 50, deleted after 24 h)</label>
+      <div class="hint">Raw frames can contain readable codes: leave this off except while testing.</div>
+      <div id="sf-error" class="notice alert" style="white-space:pre-wrap;display:none;margin-top:10px"></div>
+      <div class="row" style="margin-top:14px"><button class="primary" type="submit">${o ? "Save" : "Add"}</button>
+        <a class="btn" href="#/access">Cancel</a>
+        ${o ? `<span class="spacer"></span><button type="button" class="danger" onclick="deleteScanner('${o.id}')">Delete</button>` : ""}</div>
+    </form></div>`;
+  api("sources").then(src => {
+    document.getElementById("sf-streams").innerHTML = src.go2rtc.map(s => `<option value="${esc(s)}">`).join("");
+    document.getElementById("sf-entities").innerHTML = src.ha_cameras.map(c => `<option value="${esc(c.entity_id)}">${esc(c.name)}</option>`).join("");
+  }).catch(() => {});
+  document.getElementById("sf").addEventListener("submit", async e => {
+    e.preventDefault();
+    const val = k => document.getElementById("sf-" + k).value;
+    const body = { name: val("name").trim(), source: document.querySelector("input[name=sf-src]:checked").value,
+      go2rtc_stream: val("stream").trim(), camera_entity: val("entity").trim(),
+      fallback: document.getElementById("sf-fallback").checked, debug_frames: document.getElementById("sf-debug").checked };
+    for (const k of ["crop_x1", "crop_y1", "crop_x2", "crop_y2", "window_s", "frame_interval_s"]) body[k] = +val(k);
+    if (!o) body.id = val("id").trim();
+    try {
+      await (o ? api(`access/scanners/${o.id}`, { method: "PUT", body }) : api("access/scanners", { method: "POST", body }));
+      access = null; location.hash = "#/access";
+    } catch (err) {
+      const box = document.getElementById("sf-error"); box.textContent = err.message; box.style.display = "";
+    }
+  });
+}
+async function deleteScanner(id) {
+  if (!confirm("Delete this scanner and its Home Assistant entities?")) return;
+  try { await api(`access/scanners/${id}`, { method: "DELETE" }); access = null; location.hash = "#/access"; }
+  catch (e) { alert(e.message); }
+}
+
 (async () => {
   try { state = await api("state"); } catch (e) { $main.innerHTML = `<div class="loading">Could not reach TagSense: ${esc(e.message)}</div>`; }
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
+  showAccessLink();
   render(false);
   schedule();
 })();

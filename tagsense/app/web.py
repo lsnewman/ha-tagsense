@@ -54,7 +54,9 @@ class Api:
                 "families": {f: {"ids": family_info(f).id_count, "cells": family_info(f).cells}
                              for f in FAMILIES},
                 "default_family": DEFAULT_FAMILY,
-                "objects": [o.status() for o in self.app.objects.values()]}
+                "objects": [o.status() for o in self.app.objects.values()],
+                "access": {"enabled": self.app.access is not None,
+                           "error": self.app.access_error}}
 
     def sources(self) -> dict:
         out = {"go2rtc": [], "ha_cameras": [], "errors": {}}
@@ -205,6 +207,61 @@ class Api:
             raise ApiError(404, "no image yet")
         return data
 
+    # --- access (404 unless access_enabled and started) -------------------------
+
+    def _access(self):
+        if self.app.access is None:
+            raise ApiError(404, "not found")
+        return self.app.access
+
+    def _scanner(self, sid: str):
+        s = self._access().scanners.get(sid)
+        if not s:
+            raise ApiError(404, f"no scanner {sid!r}")
+        return s
+
+    def access_status(self) -> dict:
+        return self._access().status()
+
+    def access_create(self, body: dict) -> dict:
+        try:
+            return {"id": self._access().create(body)}
+        except ConfigError as e:
+            raise ApiError(400, str(e)) from None
+
+    def access_update(self, sid: str, body: dict) -> dict:
+        self._scanner(sid)
+        try:
+            return {"id": self._access().update(sid, body)}
+        except ConfigError as e:
+            raise ApiError(400, str(e)) from None
+
+    def access_delete(self, sid: str) -> dict:
+        self._scanner(sid)
+        self._access().delete(sid)
+        return {"deleted": sid}
+
+    def access_scan(self, sid: str) -> dict:
+        self._scanner(sid)
+        self._access().scan(sid, "panel")
+        return {"scanning": sid}
+
+    def access_image(self, sid: str) -> bytes:
+        data = self._scanner(sid).last_jpeg
+        if not data:
+            raise ApiError(404, "no image yet")
+        return data
+
+    def access_frame(self, sid: str) -> bytes:
+        try:
+            return self._scanner(sid).grab()
+        except FetchError as e:
+            raise ApiError(502, str(e)) from None
+
+    def access_debug(self, sid: str) -> bytes:
+        self._scanner(sid)
+        return self._access().debug_zip(sid)
+
     def _parse(self, raw: dict) -> ObjectConfig:
         try:
             return parse_one(raw)
@@ -237,7 +294,16 @@ ROUTES = [
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/frame\.jpg", "frame"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/(?P<kind>last|phantom)\.jpg", "image"),
     ("GET", r"/api/tag/(?P<tag>\d+)\.(?P<fmt>png|svg)", "tag"),
+    ("GET", r"/api/access", "access_status"),
+    ("POST", r"/api/access/scanners", "access_create"),
+    ("PUT", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)", "access_update"),
+    ("DELETE", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)", "access_delete"),
+    ("POST", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/scan", "access_scan"),
+    ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/last\.jpg", "access_image"),
+    ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/frame\.jpg", "access_frame"),
+    ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/debug\.zip", "access_debug"),
 ]
+NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan")
 
 
 def make_handler(api: Api, allow_all: bool):
@@ -313,10 +379,16 @@ def make_handler(api: Api, allow_all: bool):
                     return self._send(200, api.frame(kw["oid"], age), "image/jpeg")
                 if name == "image":
                     return self._send(200, api.image(kw["oid"], kw["kind"]), "image/jpeg")
+                if name in ("access_image", "access_frame"):
+                    return self._send(200, getattr(api, name)(kw["sid"]), "image/jpeg")
+                if name == "access_debug":
+                    body = api.access_debug(kw["sid"])
+                    self._attachment(f"tagsense-scan-frames-{kw['sid']}.zip")
+                    return self._send(200, body, "application/zip")
                 if name == "snapshot":
                     return self._send(200, api.snapshot(kw["oid"], kw["name"]), "image/jpeg", cache=True)
                 args = list(kw.values())
-                if method in ("POST", "PUT", "PATCH") and name not in ("check", "reset_reference", "set_orientation"):
+                if method in ("POST", "PUT", "PATCH") and name not in NO_BODY:
                     args.append(self._body())
                 return self._json(200, getattr(api, name)(*args))
             except ApiError as e:

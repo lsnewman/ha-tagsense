@@ -16,6 +16,12 @@ are never committed. Sections:
               away from the real tag, and random textures (gravel-like noise).
   ablation    (--ablation) each tuned parameter reset to the OpenCV default, one
               at a time, against the transplant and texture results.
+
+    python -m app.sweep --qr [DIR]
+
+  qr          QR decode rate by module size (px per QR module in the full
+              frame), plain, blurred, low-contrast and with phone-screen glare,
+              plus decode time; and real frames in DIR/qr if present.
 """
 from __future__ import annotations
 
@@ -225,9 +231,72 @@ def ablated_params(field: str) -> aruco.DetectorParameters:
     return p
 
 
+QR_MODULE_PX = (2.0, 2.5, 3.0, 4.0, 5.0)
+QR_PAYLOADS = {"25 chars": "TS1RAB12CD34EF56GH78JK2Q3", "45 chars": "TS1SAB12CD34X7Q2K9M" + "Z" * 26}
+QR_CONDITIONS = ("plain", "blur", "dim", "glare")
+
+
+def qr_scene(payload: str, module_px: float, cond: str, rng) -> np.ndarray:
+    """A 1280x720 frame with a phone-held QR code, tilted a little."""
+    frame = rng.normal(110, 20, (720, 1280, 3)).clip(0, 255).astype(np.uint8)
+    q = cv2.QRCodeEncoder.create().encode(payload)
+    side = int(q.shape[0] * module_px)
+    img = cv2.cvtColor(cv2.resize(q, (side, side), interpolation=cv2.INTER_AREA), cv2.COLOR_GRAY2BGR)
+    if cond == "glare":             # a bright diagonal band, as a screen reflection
+        yy, xx = np.mgrid[0:side, 0:side]
+        band = np.exp(-((xx - yy) / (side * 0.12)) ** 2)[..., None] * 160
+        img = np.clip(img.astype(np.float32) * 0.85 + band, 0, 255).astype(np.uint8)
+    x, y, j = rng.uniform(300, 1280 - side - 300), rng.uniform(100, 720 - side - 100), side * 0.1
+    src = np.float32([[0, 0], [side, 0], [side, side], [0, side]])
+    dst = np.float32([[x + rng.uniform(0, j), y], [x + side, y + rng.uniform(0, j)],
+                      [x + side - rng.uniform(0, j), y + side], [x, y + side - rng.uniform(0, j)]])
+    H = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(img, H, (1280, 720))
+    mask = cv2.warpPerspective(np.full((side, side), 255, np.uint8), H, (1280, 720))
+    frame[mask > 0] = warped[mask > 0]
+    if cond == "blur":
+        frame = cv2.GaussianBlur(frame, (0, 0), 1.0)
+    elif cond == "dim":
+        frame = np.clip((frame.astype(np.float32) - 110) * 0.35 + 60
+                        + rng.normal(0, 4, frame.shape), 0, 255).astype(np.uint8)
+    return frame
+
+
+def qr_sweep(root: Path | None, trials: int) -> int:
+    from .access.qr import QrDecoder
+    rng, dec = np.random.default_rng(3), QrDecoder()
+    print(f"# QR sweep, {trials} trials per cell, OpenCV {cv2.__version__}")
+    for label, payload in QR_PAYLOADS.items():
+        q = cv2.QRCodeEncoder.create().encode(payload)
+        rows, times = [], []
+        for cond in QR_CONDITIONS:
+            row = []
+            for m in QR_MODULE_PX:
+                ok = 0
+                for _ in range(trials):
+                    r = dec.decode(qr_scene(payload, m, cond, rng))
+                    if r:
+                        times.append(r.ms)
+                    ok += bool(r and r.text == payload)
+                row.append(f"{ok}/{trials}")
+            rows.append((cond, row))
+        table(f"QR {label} ({q.shape[0]} modules with quiet zone): decodes by px per module",
+              [f"{m:g}px" for m in QR_MODULE_PX], rows)
+        if times:
+            print(f"decode time (successful reads, whole 1280x720 frame): "
+                  f"median {np.median(times):.0f} ms, max {max(times):.0f} ms")
+    real = load_frames(root, "qr") if root else []
+    if real:
+        hits = sum(bool(dec.decode(img)) for _, img in real)
+        print(f"\nreal frames in {root}/qr: {hits}/{len(real)} read")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("dir", type=Path)
+    ap.add_argument("dir", type=Path, nargs="?")
+    ap.add_argument("--qr", action="store_true", help="QR decoding instead of tag families")
+    ap.add_argument("--qr-trials", type=int, default=10)
     ap.add_argument("--families", default=",".join(FAMILIES))
     ap.add_argument("--crop", type=parse_crop, default=DEFAULT_CROP)
     ap.add_argument("--tag-id", type=int, default=5, help="the real tag16h5 id in present/")
@@ -237,6 +306,10 @@ def main(argv=None) -> int:
     ap.add_argument("--full-frame", action="store_true",
                     help="also count phantoms over whole frames (slow)")
     a = ap.parse_args(argv)
+    if a.qr:
+        return qr_sweep(a.dir, a.qr_trials)
+    if a.dir is None:
+        ap.error("DIR is required (except with --qr)")
     families = [f.strip() for f in a.families.split(",") if f.strip()]
     for f in families:
         family_info(f)

@@ -1,5 +1,5 @@
 name: TagSense (dev)
-version: "0.5.0b1"
+version: "0.5.0b2"
 slug: tagsense
 description: Detect whether tagged objects (bin, car, chair...) are in place from AprilTags, published to HA via MQTT.
 url: https://github.com/lsnewman/ha-tagsense
@@ -29,6 +29,7 @@ options:
   sanity_min_ratio: 0.5
   sanity_min_h: 0.02
   log_level: info
+  access_enabled: false
 schema:
   go2rtc_url: str
   max_aspect: float(0,20)
@@ -46,3 +47,6 @@ schema:
   mqtt_port: port?
   mqtt_username: str?
   mqtt_password: password?
+  access_enabled: bool
+  access_mqtt_username: str?
+  access_mqtt_password: password?
