@@ -540,3 +540,95 @@ def test_auto_capture_config_rules():
     assert parse_scanner({**both, "camera_entity": ""}).capture == "stream"
     with pytest.raises(ConfigError, match="auto capture needs both"):
         parse_scanner({**both, "camera_entity": "", "capture": "auto"})
+
+
+# --- step 3: admin API for passes and static codes ----------------------------------------
+
+def test_every_access_route_404s_and_loads_nothing_when_off(tmp_path):
+    code = f"""
+import sys, re
+sys.path.insert(0, 'tests'); sys.path.insert(0, '.')
+from test_web import FakeMqtt, fake_source
+from app.main import App, DEFAULT_OPTIONS
+from app.web import Api, ApiError, ROUTES, NO_BODY
+api = Api(App(dict(DEFAULT_OPTIONS), mqtt=FakeMqtt(), source_factory=fake_source, data_dir={str(tmp_path)!r}))
+n = 0
+for method, pattern, name in ROUTES:
+    if not name.startswith("access_"):
+        continue
+    args = [m for m in re.findall(r"\\(\\?P<(\\w+)>", pattern)]
+    vals = {{"sid": "door", "handle": "ABCD", "code_id": "ABCDEFGH"}}
+    body = method in ("POST", "PUT", "PATCH") and name not in NO_BODY
+    call = [vals[a] for a in args] + ([{{}}] if body else [])
+    try:
+        getattr(api, name)(*call)
+        raise SystemExit(f"{{name}} did not refuse")
+    except ApiError as e:
+        assert e.status == 404, (name, e.status)
+        n += 1
+assert not [m for m in sys.modules if m.startswith('app.access')], 'imported'
+print('ok', n)
+"""
+    r = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).parents[1],
+                       capture_output=True, text=True)
+    assert r.stdout.startswith("ok"), r.stderr
+    assert int(r.stdout.split()[1]) >= 18
+
+
+def admin_app(tmp_path):
+    from app.users import HaUser, UserDirectory
+    app = make_app(tmp_path, access_enabled=True)
+    app.users = UserDirectory(fetch=lambda: [HaUser("u1", "Luke", True, True),
+                                             HaUser("u2", "Sam", False, True)], token="x")
+    return app, Api(app)
+
+
+def test_admin_passes_api(tmp_path):
+    app, api = admin_app(tmp_path)
+    d = api.access_codes()
+    assert {u["name"] for u in d["users"]} == {"Luke", "Sam"} and d["people"] == []
+    h = api.access_person_add({"label": "Sam", "ha_user_id": "u2"})["handle"]
+    with pytest.raises(ApiError, match="already has a pass"):
+        api.access_person_add({"label": "Sam again", "ha_user_id": "u2"})
+    p = api.access_codes()["people"][0]
+    assert p["handle"] == h and p["ha_user_name"] == "Sam" and "secret" not in p
+    api.access_person_update(h, {"enabled": False})
+    assert api.access_codes()["people"][0]["enabled"] is False
+    old_v = app.access.codes.person(h).v
+    api.access_person_reenrol(h)
+    assert app.access.codes.person(h).v != old_v
+    api.access_person_delete(h)
+    assert api.access_codes()["people"] == []
+    assert "secret" not in json.dumps(api.access_codes())
+
+
+def test_admin_static_codes_api(tmp_path):
+    app, api = admin_app(tmp_path)
+    with pytest.raises(ApiError, match="expiry, a number of uses"):
+        api.access_static_issue({"label": "Plumber"})
+    cid = api.access_static_issue({"label": "Plumber", "uses": "1"})["code_id"]
+    png = api.access_static_png(cid)
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    payload = QrDecoder().decode(img).text
+    assert codes.parse(payload).code_id == cid
+    listing = api.access_codes()
+    assert payload not in json.dumps(listing)                 # the list never carries the code
+    assert listing["static"][0]["status"] == "active" and listing["static"][0]["uses_left"] == 1
+    api.access_static_revoke(cid)
+    with pytest.raises(ApiError) as e:
+        api.access_static_png(cid)
+    assert e.value.status == 410
+    cid2 = api.access_static_issue({"label": "Painter", "uses": 2})["code_id"]
+    assert api.access_static_revoke_all() == {"revoked": 1}
+    v = api.access_codes()["key_version"]
+    assert api.access_rotate_key()["key_version"] != v
+    assert app.access.verifier.verify(payload, "door").status == "invalid"
+
+
+def test_admin_clear_lockout(tmp_path):
+    app, api = admin_app(tmp_path)
+    sid = api.access_create({"name": "Door", "source": "go2rtc", "go2rtc_stream": "d"})["id"]
+    app.access.verifier.register_bad(sid, 9)
+    assert api.access_status()["scanners"][0]["locked_until"]
+    api.access_clear_lockout(sid)
+    assert api.access_status()["scanners"][0]["locked_until"] is None

@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -272,6 +273,110 @@ class Api:
         except FetchError as e:
             raise ApiError(502, str(e)) from None
 
+    # --- access codes (admin) -------------------------------------------------------
+
+    def _issue(self):
+        self._access()                   # 404 first: never import access code when it is off
+        from .access import issue
+        return issue
+
+    def _codes_call(self, fn, *a, **k):
+        issue = self._issue()
+        try:
+            return fn(*a, **k)
+        except issue.IssueError as e:
+            raise ApiError(400, str(e)) from None
+
+    def access_codes(self) -> dict:
+        acc, issue = self._access(), self._issue()
+        users = {u.id: u.name for u in self.app.users.users()}
+        if not users:
+            self.app.users.get("-")           # refresh the cached list
+            users = {u.id: u.name for u in self.app.users.users()}
+        now = time.time()
+        v, _ = acc.codes.static_key()
+        return {
+            "people": [p.public() | {"ha_user_name": users.get(p.ha_user_id)}
+                       for p in acc.codes.people()],
+            "static": [{"code_id": r.code_id, "label": r.label, "status": issue.static_status(r, now),
+                        "valid_from": r.valid_from, "expires": r.expires, "uses_total": r.uses_total,
+                        "uses_left": r.uses_left, "created": r.created, "used": len(r.used_at),
+                        "current_key": r.v == v}
+                       for r in sorted(acc.codes.static_codes(), key=lambda r: -r.created)],
+            "users": [{"id": i, "name": n} for i, n in sorted(users.items(), key=lambda x: x[1].lower())],
+            "users_error": self.app.users.error,
+            "key_version": v, "period": acc.verifier.period,
+            "backstop_days": issue.BACKSTOP_DAYS, "max_days": issue.MAX_DAYS}
+
+    def access_person_add(self, body: dict) -> dict:
+        p = self._codes_call(self._issue().add_person, self._access().codes,
+                             str(body.get("label") or ""), str(body.get("ha_user_id") or ""))
+        log.info("access: pass added for %r", p.label)
+        return {"handle": p.handle}
+
+    def access_person_update(self, handle: str, body: dict) -> dict:
+        self._access()
+        if "enabled" in body:
+            self._codes_call(self._issue().set_enabled, self._access().codes, handle,
+                             bool(body["enabled"]))
+        return {"handle": handle}
+
+    def access_person_reenrol(self, handle: str) -> dict:
+        self._codes_call(self._issue().re_enrol, self._access().codes, handle)
+        log.info("access: pass %s re-enrolled (earlier codes no longer work)", handle)
+        return {"handle": handle}
+
+    def access_person_delete(self, handle: str) -> dict:
+        self._codes_call(self._issue().remove_person, self._access().codes, handle)
+        return {"deleted": handle}
+
+    def access_static_issue(self, body: dict) -> dict:
+        def num(k, cast=float):
+            v = body.get(k)
+            if v in (None, ""):
+                return None
+            try:
+                return cast(v)
+            except (TypeError, ValueError):
+                raise ApiError(400, f"{k} must be a number") from None
+        rec, _ = self._codes_call(
+            self._issue().issue_static, self._access().codes, str(body.get("label") or ""),
+            expires=num("expires"), uses=num("uses", int), valid_from=num("valid_from"),
+            backstop_days=num("backstop_days", int) or self._issue().BACKSTOP_DAYS)
+        log.info("access: static code %s issued for %r", rec.code_id, rec.label)
+        return {"code_id": rec.code_id}
+
+    def access_static_png(self, code_id: str) -> bytes:
+        acc, issue = self._access(), self._issue()
+        from .access import codes
+        rec = acc.codes.static_record(code_id)
+        if rec is None:
+            raise ApiError(404, f"no code {code_id!r}")
+        if issue.static_status(rec) not in ("active", "not yet valid"):
+            raise ApiError(410, f"this code is {issue.static_status(rec)}")
+        return codes.qr_png(self._codes_call(issue.static_payload, acc.codes, rec))
+
+    def access_static_revoke(self, code_id: str) -> dict:
+        self._codes_call(self._issue().revoke_static, self._access().codes, code_id)
+        log.info("access: static code %s revoked", code_id)
+        return {"revoked": code_id}
+
+    def access_static_revoke_all(self) -> dict:
+        n = self._issue().revoke_all_static(self._access().codes)
+        log.info("access: all static codes revoked (%d)", n)
+        return {"revoked": n}
+
+    def access_rotate_key(self) -> dict:
+        v = self._access().codes.rotate_static_key()
+        log.info("access: static signing key rotated; every earlier static code is invalid")
+        return {"key_version": v}
+
+    def access_clear_lockout(self, sid: str) -> dict:
+        self._scanner(sid)
+        self._access().verifier.clear_lockout(sid)
+        log.info("access [%s]: lockout cleared from the panel", sid)
+        return {"cleared": sid}
+
     def access_debug(self, sid: str) -> bytes:
         self._scanner(sid)
         return self._access().debug_zip(sid)
@@ -317,8 +422,21 @@ ROUTES = [
     ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/last\.jpg", "access_image"),
     ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/frame\.jpg", "access_frame"),
     ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/debug\.zip", "access_debug"),
+    ("POST", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/clear_lockout", "access_clear_lockout"),
+    ("GET", r"/api/access/codes", "access_codes"),
+    ("POST", r"/api/access/people", "access_person_add"),
+    ("PATCH", r"/api/access/people/(?P<handle>[A-Z2-7]{4})", "access_person_update"),
+    ("DELETE", r"/api/access/people/(?P<handle>[A-Z2-7]{4})", "access_person_delete"),
+    ("POST", r"/api/access/people/(?P<handle>[A-Z2-7]{4})/reenrol", "access_person_reenrol"),
+    ("POST", r"/api/access/static", "access_static_issue"),
+    ("GET", r"/api/access/static/(?P<code_id>[A-Z2-7]{8})\.png", "access_static_png"),
+    ("POST", r"/api/access/static/(?P<code_id>[A-Z2-7]{8})/revoke", "access_static_revoke"),
+    ("POST", r"/api/access/static/revoke_all", "access_static_revoke_all"),
+    ("POST", r"/api/access/rotate_key", "access_rotate_key"),
 ]
-NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan")
+NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_clear_lockout",
+           "access_person_reenrol", "access_static_revoke", "access_static_revoke_all",
+           "access_rotate_key")
 
 
 def make_handler(api: Api, allow_all: bool):
@@ -396,6 +514,8 @@ def make_handler(api: Api, allow_all: bool):
                     return self._send(200, api.image(kw["oid"], kw["kind"]), "image/jpeg")
                 if name == "whoami":
                     return self._json(200, api.whoami(self.headers))
+                if name == "access_static_png":
+                    return self._send(200, api.access_static_png(kw["code_id"]), "image/png")
                 if name in ("access_image", "access_frame"):
                     return self._send(200, getattr(api, name)(kw["sid"]), "image/jpeg")
                 if name == "access_debug":

@@ -897,7 +897,18 @@ async function objectForm(id) {
 
 // ---------- access: QR scanners ---------------------------------------------
 let access = null;
-const EVENT_TEXT = { qr_seen: "QR code read", scan_timeout: "no code before the window ended" };
+const EVENT_TEXT = {
+  verified: "VERIFIED", invalid: "invalid code", not_yet_valid: "code not valid yet", expired: "expired code",
+  replayed: "code already used", revoked: "revoked code", locked_out: "locked out (too many bad codes)",
+  unrecognised: "not a TagSense code", unavailable: "could not verify (failed closed)",
+  scan_timeout: "no valid code before the window ended" };
+function eventDetail(e) {
+  if (e.label) return `${e.label} · ${e.code_type}${e.uses_left !== null && e.uses_left !== undefined ? ` · ${e.uses_left} uses left` : ""}`;
+  if (e.fingerprint) return `fingerprint ${e.fingerprint}`;
+  if (e.locked_until) return `until ${new Date(e.locked_until).toLocaleTimeString()}`;
+  if (e.event_type === "scan_timeout") return `${e.frames} frames${e.fetch_failures ? ", " + e.fetch_failures + " failed" : ""}`;
+  return e.reason || "";
+}
 async function accessPage(isRefresh) {
   const a = state.access || {};
   if (!a.enabled) {
@@ -918,13 +929,16 @@ async function accessPage(isRefresh) {
     }
   }
   $main.innerHTML = `<div id="acc-root" data-ids="${esc(access.scanners.map(sc => sc.id).join(","))}">
-    <div class="row" style="margin-bottom:12px"><h2 style="flex:1;margin:0">Access scanners</h2>
+    <div class="row" style="margin-bottom:12px"><h2 style="flex:1;margin:0">Access</h2>
       <a class="btn" href="#/access/new">Add scanner</a></div>
     ${access.mqtt_connected ? "" : `<div class="notice alert">The access MQTT connection is down: check access_mqtt_username / access_mqtt_password and the broker log.</div>`}
-    <div class="notice small">Stage 2 preview: a scan only reports that a QR code was read (its length and a fingerprint), never what it says. Nothing is verified yet, and TagSense never unlocks anything.</div>
+    <div class="notice small">TagSense verifies codes and reports events. It never unlocks anything: your Home Assistant automations decide what a <b>verified</b> event does.</div>
+    <div id="acc-codes"><div class="card"><div class="loading">Loading codes…</div></div></div>
+    <h2 style="margin:20px 0 12px">Scanners</h2>
     ${access.scanners.length ? access.scanners.map(scannerCard).join("") :
       `<div class="card"><p class="muted">No scanners yet. Add the doorbell camera as a scanner, then trigger <b>Scan</b> from a doorbell-press automation.</p></div>`}
   </div>`;
+  loadCodes();
 }
 function scannerCard(sc) {
   return `<div class="card" id="acc-${esc(sc.id)}" style="margin-bottom:16px">
@@ -941,6 +955,8 @@ function scannerDynamic(sc) {
     <div class="muted small">${esc(src)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
     ${sc.last_stats ? `<div class="hint">Last scan ${ago(sc.last_stats.at)}: ${esc(statsText(sc.last_stats))}</div>` : ""}
     ${sc.last_error ? `<div class="hint">Last fetch error: ${esc(sc.last_error)}</div>` : ""}
+    ${sc.locked_until ? `<div class="notice alert small" style="margin:8px 0 0">Locked out until ${esc(new Date(sc.locked_until).toLocaleString())} after too many bad codes: scans are ignored.
+      <button class="small" onclick="clearLockout('${sc.id}')">Clear lockout</button></div>` : ""}
     <div class="row" style="margin-top:8px">
       <button class="primary" onclick="accessScan('${sc.id}', this)" ${sc.scanning ? "disabled" : ""}>Scan now</button>
       <button onclick="toggleLive('${sc.id}')">${liveOpen.has(sc.id) ? "Hide live frame" : "Show live frame"}</button>
@@ -954,9 +970,8 @@ function scannerDynamic(sc) {
       </div>
       <div><h3>Recent events</h3>
         ${sc.events.length ? `<table class="small">${sc.events.map(e => `<tr>
-          <td>${ago(e.scanned_at)}</td><td>${esc(EVENT_TEXT[e.event_type] || e.event_type)}${e.fingerprint
-            ? ` <span class="muted">(${esc(e.fingerprint)}, ${e.length} chars, ${esc(e.decoder)}, frame ${e.frames})</span>`
-            : ` <span class="muted">(${e.frames} frames${e.fetch_failures ? ", " + e.fetch_failures + " failed" : ""})</span>`}</td></tr>`).join("")}</table>`
+          <td>${ago(e.scanned_at)}</td><td>${e.event_type === "verified" ? `<b>${esc(EVENT_TEXT.verified)}</b>` : esc(EVENT_TEXT[e.event_type] || e.event_type)}
+            <span class="muted">${esc(eventDetail(e))}</span></td></tr>`).join("")}</table>`
           : `<div class="muted small">None since the app started.</div>`}</div>
     </div>`;
 }
@@ -975,6 +990,124 @@ async function accessScan(id, btn) {
   try { await api(`access/scanners/${id}/scan`, { method: "POST" }); } catch (e) { alert(e.message); }
   setTimeout(refresh, 500);
 }
+
+// ---------- access: passes and static codes (admin) ---------------------------
+let codesData = null, lastIssued = null;
+const fmtWhen = ts => ts ? new Date(ts * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+async function loadCodes() {
+  const box = document.getElementById("acc-codes");
+  if (!box) return;
+  try { codesData = await api("access/codes"); } catch (e) { box.innerHTML = `<div class="card notice alert">${esc(e.message)}</div>`; return; }
+  box.innerHTML = passesCard() + staticCard();
+}
+function passesCard() {
+  const d = codesData, people = d.people;
+  const taken = new Set(people.map(p => p.ha_user_id));
+  const free = d.users.filter(u => !taken.has(u.id));
+  return `<div class="card" style="margin-bottom:16px"><h3>Passes (rotating codes)</h3>
+    <p class="muted small">A pass belongs to one Home Assistant user, who opens it from the TagSense sidebar entry on their phone.
+      The code changes every ${d.period} s. Re-enrol makes every earlier code of that person stop working.</p>
+    ${people.length ? `<table class="small">${people.map(p => `<tr>
+      <td><b>${esc(p.label)}</b> <span class="muted">${esc(p.ha_user_name || "unknown user")}</span></td>
+      <td>${p.enabled ? "enabled" : `<span class="muted">disabled</span>`}</td>
+      <td style="text-align:right">
+        <button class="small" onclick="personEnable('${p.handle}', ${!p.enabled})">${p.enabled ? "Disable" : "Enable"}</button>
+        <button class="small" onclick="personReenrol('${p.handle}')">Re-enrol</button>
+        <button class="small danger" onclick="personDelete('${p.handle}')">Delete</button></td></tr>`).join("")}</table>`
+      : `<div class="muted small">No passes yet.</div>`}
+    ${d.users_error ? `<div class="notice alert small">Could not read Home Assistant's users: ${esc(d.users_error)}</div>` : ""}
+    <div class="row" style="margin-top:10px;align-items:flex-end">
+      <div><label for="pp-label">Label</label><input id="pp-label" maxlength="60" placeholder="Luke" style="max-width:180px"></div>
+      <div><label for="pp-user">Home Assistant user</label><select id="pp-user">${free.map(u => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("")}</select></div>
+      <button onclick="personAdd()" ${free.length ? "" : "disabled"}>Add pass</button></div>
+    <div class="error" id="pp-error"></div></div>`;
+}
+function staticCard() {
+  const d = codesData;
+  const rows = d.static.map(r => `<tr>
+    <td><b>${esc(r.label)}</b><div class="muted">${r.valid_from ? "from " + esc(fmtWhen(r.valid_from)) + " · " : ""}until ${esc(fmtWhen(r.expires))}</div></td>
+    <td>${esc(r.status)}${r.uses_total ? `<div class="muted">${r.uses_left} of ${r.uses_total} uses left</div>` : r.used ? `<div class="muted">used ${r.used}×</div>` : ""}</td>
+    <td style="text-align:right">${["active", "not yet valid"].includes(r.status) && r.current_key ? `
+      <button class="small" onclick="showCode('${r.code_id}')">Show</button>
+      <button class="small danger" onclick="revokeCode('${r.code_id}')">Revoke</button>` : ""}</td></tr>`).join("");
+  return `<div class="card" style="margin-bottom:16px"><h3>Static codes (for visitors)</h3>
+    <p class="muted small">For sending by text, e.g. to a tradesperson. Assume it can be forwarded: give it a start, an expiry and/or a number of uses.
+      With no expiry it still expires after the backstop.</p>
+    <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+      <div><label for="sc-label">Label</label><input id="sc-label" maxlength="60" placeholder="Plumber" style="max-width:180px"></div>
+      <div><label for="sc-from">Valid from <span class="muted">(optional)</span></label><input id="sc-from" type="datetime-local"></div>
+      <div><label for="sc-to">Expires <span class="muted">(optional)</span></label><input id="sc-to" type="datetime-local"></div>
+      <div><label for="sc-uses">Uses <span class="muted">(optional)</span></label><input id="sc-uses" type="number" min="1" max="1000" placeholder="1" style="max-width:90px"></div>
+      <div><label for="sc-backstop">Backstop (days)</label><input id="sc-backstop" type="number" min="1" max="${d.max_days}" value="${d.backstop_days}" style="max-width:90px"></div>
+      <button class="primary" onclick="issueCode()">Issue code</button></div>
+    <div class="error" id="sc-error"></div>
+    <div id="sc-show"></div>
+    ${rows ? `<table class="small" style="margin-top:10px">${rows}</table>` : `<div class="muted small" style="margin-top:8px">No static codes yet.</div>`}
+    <div class="row" style="margin-top:12px">
+      <button class="small danger" onclick="revokeAll()">Revoke all static codes</button>
+      <button class="small danger" onclick="rotateKey()">Rotate signing key</button>
+      <span class="muted small">Key version ${esc(d.key_version)}</span></div></div>`;
+}
+function codeMessage(r) {
+  const parts = [];
+  if (r.valid_from) parts.push(`from ${fmtWhen(r.valid_from)}`);
+  parts.push(`until ${fmtWhen(r.expires)}`);
+  const uses = r.uses_total ? (r.uses_total === 1 ? "one use" : `${r.uses_total} uses`) : "any number of uses";
+  return `Here is your access code. Ring the doorbell, then hold this code up to the camera. Valid ${parts.join(" ")}, ${uses}.`;
+}
+function showCode(id) {
+  const r = codesData.static.find(x => x.code_id === id), box = document.getElementById("sc-show");
+  const url = `api/access/static/${id}.png?t=${Date.now()}`;
+  box.innerHTML = `<div class="card" style="margin-top:12px;background:var(--bg)">
+    <div class="cols" style="grid-template-columns:200px minmax(0,1fr);align-items:start">
+      <img src="${url}" alt="Access code for ${esc(r.label)}" style="width:200px;background:#fff;border-radius:6px">
+      <div><b>${esc(r.label)}</b> · ${esc(r.status)}
+        <textarea id="sc-msg" readonly style="margin-top:8px;min-height:80px">${esc(codeMessage(r))}</textarea>
+        <div class="row" style="margin-top:8px"><a class="btn" href="${url}" download="access-code-${esc(r.label.replace(/[^A-Za-z0-9]+/g, "-"))}.png">Download image</a>
+          <button onclick="navigator.clipboard.writeText(document.getElementById('sc-msg').value)">Copy message</button>
+          <button onclick="document.getElementById('sc-show').innerHTML=''">Close</button></div>
+        <div class="hint">Send the image and the message together. Anyone with the image can use it until it expires or is used up.</div></div></div></div>`;
+}
+async function codesAction(fn, errId) {
+  const err = errId && document.getElementById(errId);
+  if (err) err.textContent = "";
+  try { await fn(); await loadCodes(); return true; }
+  catch (e) { if (err) err.textContent = e.message; else alert(e.message); return false; }
+}
+function personAdd() {
+  codesAction(() => api("access/people", { method: "POST", body: {
+    label: document.getElementById("pp-label").value.trim(), ha_user_id: document.getElementById("pp-user").value } }), "pp-error");
+}
+function personEnable(h, on) { codesAction(() => api(`access/people/${h}`, { method: "PATCH", body: { enabled: on } })); }
+function personReenrol(h) {
+  if (confirm("Re-enrol this pass? Every earlier code of this person stops working at once.")) codesAction(() => api(`access/people/${h}/reenrol`, { method: "POST" }));
+}
+function personDelete(h) {
+  if (confirm("Delete this pass?")) codesAction(() => api(`access/people/${h}`, { method: "DELETE" }));
+}
+async function issueCode() {
+  const v = id => document.getElementById(id).value;
+  const ts = id => v(id) ? new Date(v(id)).getTime() / 1000 : null;
+  let issued = null;
+  const ok = await codesAction(async () => {
+    issued = await api("access/static", { method: "POST", body: { label: v("sc-label").trim(),
+      valid_from: ts("sc-from"), expires: ts("sc-to"), uses: v("sc-uses") || null, backstop_days: v("sc-backstop") || null } });
+  }, "sc-error");
+  if (ok && issued) showCode(issued.code_id);
+}
+function revokeCode(id) {
+  if (confirm("Revoke this code? It stops working at once.")) codesAction(() => api(`access/static/${id}/revoke`, { method: "POST" }));
+}
+function revokeAll() {
+  if (confirm("Revoke ALL static codes? They all stop working at once. Passes are not affected.")) codesAction(() => api("access/static/revoke_all", { method: "POST" }));
+}
+function rotateKey() {
+  if (confirm("Rotate the signing key? Every static code issued so far stops working at once. Passes are not affected.")) codesAction(() => api("access/rotate_key", { method: "POST" }));
+}
+async function clearLockout(id) {
+  try { await api(`access/scanners/${id}/clear_lockout`, { method: "POST" }); refresh(); } catch (e) { alert(e.message); }
+}
+
 // Live frame: while a scan runs it reloads every second and shows the frame the
 // scanner just checked (no extra camera fetch). When idle it is one snapshot,
 // refreshed on request, since a snapshot can take seconds on some cameras.
