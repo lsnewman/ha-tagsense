@@ -185,7 +185,7 @@ def http(server, method, path, body=None, headers=None):
 
 
 def test_http_layer(app):
-    server = start_web(app, 0, allow_all=True)
+    server = start_web(app, 0, allow_all=True, trust_admin=True)
     try:
         status, ctype, body = http(server, "GET", "/")
         assert status == 200 and b"TagSense" in body and ctype.startswith("text/html")

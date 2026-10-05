@@ -222,6 +222,36 @@ class Api:
                 "users": [{"name": x.name, "admin": x.is_admin, "active": x.is_active}
                           for x in self.app.users.users()] if u and u.is_admin else []}
 
+    # --- "My pass": the only data a non-admin can reach -----------------------------
+
+    def _my_person(self, headers):
+        uid = headers.get("X-Remote-User-Id")
+        if not uid:
+            raise ApiError(403, "not signed in")
+        if self.app.access is None:
+            return None
+        return next((p for p in self.app.access.codes.people()
+                     if p.ha_user_id == uid and p.enabled), None)
+
+    def pass_info(self, headers) -> dict:
+        p = self._my_person(headers)
+        if self.app.access is None:
+            return {"available": False, "has_pass": False}
+        if p is None:
+            return {"available": True, "has_pass": False}
+        period = self.app.access.verifier.period
+        _, left = self._issue().current_pass(p, period)
+        return {"available": True, "has_pass": True, "label": p.label, "period": period,
+                "seconds_left": round(left, 1)}
+
+    def pass_png(self, headers) -> bytes:
+        p = self._my_person(headers)
+        if p is None:
+            raise ApiError(404, "no pass")
+        from .access import codes
+        payload, _ = self._issue().current_pass(p, self.app.access.verifier.period)
+        return codes.qr_png(payload, module_px=14)
+
     # --- access (404 unless access_enabled and started) -------------------------
 
     def _access(self):
@@ -414,6 +444,8 @@ ROUTES = [
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/(?P<kind>last|phantom)\.jpg", "image"),
     ("GET", r"/api/tag/(?P<tag>\d+)\.(?P<fmt>png|svg)", "tag"),
     ("GET", r"/api/whoami", "whoami"),
+    ("GET", r"/api/pass", "pass_info"),
+    ("GET", r"/api/pass\.png", "pass_png"),
     ("GET", r"/api/access", "access_status"),
     ("POST", r"/api/access/scanners", "access_create"),
     ("PUT", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)", "access_update"),
@@ -434,12 +466,15 @@ ROUTES = [
     ("POST", r"/api/access/static/revoke_all", "access_static_revoke_all"),
     ("POST", r"/api/access/rotate_key", "access_rotate_key"),
 ]
+# The only routes a signed-in non-admin may use (the page itself, "/", has no data).
+# Every other route is admin-only: a new route is admin-only unless added here.
+NON_ADMIN_ROUTES = ("whoami", "pass_info", "pass_png")
 NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_clear_lockout",
            "access_person_reenrol", "access_static_revoke", "access_static_revoke_all",
            "access_rotate_key")
 
 
-def make_handler(api: Api, allow_all: bool):
+def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
     class Handler(BaseHTTPRequestHandler):
         server_version = "TagSense"
 
@@ -492,6 +527,11 @@ def make_handler(api: Api, allow_all: bool):
                     break
             else:
                 return self._json(404, {"error": "not found"})
+            # Admin guard, before any route runs. Fails closed: no header, a failed
+            # user lookup or an unknown user all mean "not an admin".
+            if name not in NON_ADMIN_ROUTES and not (
+                    trust_admin or api.app.users.is_admin(self.headers.get("X-Remote-User-Id"))):
+                return self._json(403, {"error": "TagSense settings are for Home Assistant admins"})
             kw = match.groupdict()
             try:
                 if name == "tag":
@@ -512,8 +552,10 @@ def make_handler(api: Api, allow_all: bool):
                     return self._send(200, api.frame(kw["oid"], age), "image/jpeg")
                 if name == "image":
                     return self._send(200, api.image(kw["oid"], kw["kind"]), "image/jpeg")
-                if name == "whoami":
-                    return self._json(200, api.whoami(self.headers))
+                if name in ("whoami", "pass_info"):
+                    return self._json(200, getattr(api, name)(self.headers))
+                if name == "pass_png":
+                    return self._send(200, api.pass_png(self.headers), "image/png")
                 if name == "access_static_png":
                     return self._send(200, api.access_static_png(kw["code_id"]), "image/png")
                 if name in ("access_image", "access_frame"):
@@ -554,10 +596,13 @@ def make_handler(api: Api, allow_all: bool):
     return Handler
 
 
-def start_web(app, port: int, allow_all: bool | None = None) -> ThreadingHTTPServer:
+def start_web(app, port: int, allow_all: bool | None = None,
+              trust_admin: bool = False) -> ThreadingHTTPServer:
+    """`trust_admin` skips the admin guard. Only tests and local demos pass it;
+    there is deliberately no option or environment variable for it."""
     if allow_all is None:
         allow_all = os.environ.get("TAGSENSE_WEB_ALLOW_ALL") == "1"
-    server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(Api(app), allow_all))
+    server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(Api(app), allow_all, trust_admin))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="web", daemon=True).start()
     log.info("web UI listening on port %d%s", server.server_address[1],

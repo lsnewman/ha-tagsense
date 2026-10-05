@@ -16,6 +16,7 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:tag-search
 panel_title: TagSense
+panel_admin: false   # every HA user sees TagSense, but only admins get past the pass page
 options:
   go2rtc_url: ""
   max_aspect: 2.0

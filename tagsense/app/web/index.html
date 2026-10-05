@@ -109,6 +109,7 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
   <span class="muted small" id="version"></span>
   <span class="muted small" id="whoami" style="margin-left:10px"></span>
   <span class="spacer"></span>
+  <a class="btn" href="#/pass" id="pass-link" style="display:none">My pass</a>
   <a class="btn" href="#/access" id="access-link" style="display:none">Access</a>
   <a class="btn" href="#/new">Add object</a>
 </header>
@@ -151,8 +152,9 @@ function fmtNum(v, d = 1) { return v === null || v === undefined ? "–" : (type
 // Read-only (0.5.0b7): checks that the panel can tell who is using it, ahead of
 // the "My pass" page. It changes nothing.
 async function showWhoami() {
+  let w = null;
   try {
-    const w = await api("whoami");
+    w = await api("whoami");
     const el = document.getElementById("whoami");
     el.textContent = !w.header_present ? "signed-in user: not provided by Home Assistant"
       : w.lookup_error ? `signed in as ${w.name || "?"} · admin status unknown (${w.lookup_error})`
@@ -160,6 +162,42 @@ async function showWhoami() {
     if (w.users && w.users.length) el.title = "Home Assistant users as TagSense sees them:\n" +
       w.users.map(u => `${u.name}: ${u.admin ? "admin" : "not an admin"}${u.active ? "" : " (inactive)"}`).join("\n");
   } catch (e) { /* older back end */ }
+  return w;
+}
+
+// ---------- "My pass" (every signed-in user) --------------------------------
+// The code is drawn by the server every period, so the phone's clock does not
+// matter. Only the signed-in user's own pass is ever returned.
+let passTimer = null, passTick = null;
+async function passPage(w) {
+  clearTimeout(passTimer); clearInterval(passTick);
+  let info;
+  try { info = await api("pass"); }
+  catch (e) {
+    $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto"><h2>TagSense</h2>
+      <p class="muted">${esc(e.message === "not signed in" ? "Open TagSense from the Home Assistant sidebar." : e.message)}</p></div>`;
+    return;
+  }
+  if (!info.available || !info.has_pass) {
+    $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto"><h2>${info.available ? "No pass yet" : "Nothing here for you"}</h2>
+      <p class="muted">${info.available
+        ? "You don't have a door pass. Ask a Home Assistant admin to add one (TagSense → Access → Passes)."
+        : "TagSense's settings are for Home Assistant admins."}</p></div>`;
+    return;
+  }
+  $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto;text-align:center">
+    <h2 style="margin-bottom:4px">${esc(info.label)}</h2>
+    <div class="muted small">Ring the doorbell, then hold this up to the camera.</div>
+    <img id="pass-img" alt="Your door pass" src="api/pass.png?t=${Date.now()}"
+      style="width:100%;max-width:440px;margin:14px auto;display:block;background:#fff;border-radius:10px">
+    <div class="small"><span id="pass-left"></span></div>
+    <div class="hint" style="margin-top:8px">Screen brightness medium-high works best; tilt the phone away from lights.
+      The code changes every ${info.period} s and each one works once.</div></div>`;
+  let left = info.seconds_left;
+  const show = () => { const el = document.getElementById("pass-left"); if (el) el.textContent = `New code in ${Math.max(0, Math.ceil(left))} s`; };
+  show();
+  passTick = setInterval(() => { left -= 1; show(); }, 1000);
+  passTimer = setTimeout(() => passPage(w), (left + 0.4) * 1000);
 }
 function showAccessLink() {
   const a = state.access || {};
@@ -174,7 +212,7 @@ async function refresh() {
 function schedule(ms = 3000) { clearInterval(timer); timer = setInterval(refresh, ms); }
 
 // ---------- router --------------------------------------------------------
-function route() { editorDirty = false; render(false); }
+function route() { editorDirty = false; clearTimeout(passTimer); clearInterval(passTick); render(false); }
 window.addEventListener("hashchange", route);
 
 function render(isRefresh) {
@@ -184,6 +222,7 @@ function render(isRefresh) {
   if (h === "/new") return isRefresh ? null : objectForm(null);
   if ((m = h.match(/^\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : objectForm(m[1]);
   if ((m = h.match(/^\/obj\/([a-z0-9_]+)$/))) return detail(m[1], isRefresh);
+  if (h === "/pass") return isRefresh ? null : passPage();
   if (h === "/access") return accessPage(isRefresh);
   if (h === "/access/new") return isRefresh ? null : scannerForm(null);
   if ((m = h.match(/^\/access\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : scannerForm(m[1]);
@@ -952,7 +991,7 @@ function scannerDynamic(sc) {
   const crop = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2];
   return `<div class="row"><h2 style="flex:1">${esc(sc.name)}</h2>
       ${sc.scanning ? `<span class="chip present">scanning</span>` : `<span class="chip absent">idle</span>`}</div>
-    <div class="muted small">${esc(src)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
+    <div class="muted small">${esc(src)} · capture ${esc(sc.capture)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
     ${sc.last_stats ? `<div class="hint">Last scan ${ago(sc.last_stats.at)}: ${esc(statsText(sc.last_stats))}</div>` : ""}
     ${sc.last_error ? `<div class="hint">Last fetch error: ${esc(sc.last_error)}</div>` : ""}
     ${sc.locked_until ? `<div class="notice alert small" style="margin:8px 0 0">Locked out until ${esc(new Date(sc.locked_until).toLocaleString())} after too many bad codes: scans are ignored.
@@ -1152,7 +1191,7 @@ async function scannerForm(id) {
   const o = id ? access.scanners.find(s => s.id === id) : null;
   const v = o || { name: "", source: "go2rtc", go2rtc_stream: "", camera_entity: "", fallback: false,
     crop_x1: 0, crop_y1: 0, crop_x2: 1, crop_y2: 1, window_s: 20, frame_interval_s: 0.3, debug_frames: false,
-    capture: "stream" };
+    capture: "" };
   const num = (k, label, min, max, step) => `<div><label for="sf-${k}">${label}</label>
     <input id="sf-${k}" type="number" min="${min}" max="${max}" step="${step}" value="${v[k]}" style="max-width:110px"></div>`;
   $main.innerHTML = `<div class="${o ? "cols" : ""}"><div class="card" style="max-width:600px">
@@ -1174,7 +1213,9 @@ async function scannerForm(id) {
       ${o ? "" : `<div class="hint" style="margin-top:10px">After adding the scanner you can draw its scan area on a live frame.</div>`}
       <label for="sf-capture">Frame capture</label>
       <select id="sf-capture">
-        <option value="stream" ${v.capture !== "snapshot" ? "selected" : ""}>Video stream (recommended for go2rtc)</option>
+        ${o ? "" : `<option value="" selected>Best available (auto if both sources are set)</option>`}
+        <option value="auto" ${v.capture === "auto" ? "selected" : ""}>Auto: snapshots from the Home Assistant camera until the go2rtc stream runs (needs both)</option>
+        <option value="stream" ${v.capture === "stream" ? "selected" : ""}>Video stream (go2rtc)</option>
         <option value="snapshot" ${v.capture === "snapshot" ? "selected" : ""}>Single snapshots</option></select>
       <div class="hint">Video stream holds the go2rtc stream open during a scan: one start-up delay, then several frames a second.
         Single snapshots fetch one image at a time, which can take seconds each on some cameras. Home Assistant cameras always use snapshots.</div>
@@ -1237,10 +1278,16 @@ async function deleteScanner(id) {
 }
 
 (async () => {
+  const w = await showWhoami();
+  if (!w || !w.admin) {                 // non-admins (or unknown): their pass, nothing else
+    document.querySelectorAll("header .btn").forEach(b => b.style.display = "none");
+    window.removeEventListener("hashchange", route);
+    return passPage(w);
+  }
+  document.getElementById("pass-link").style.display = "";
   try { state = await api("state"); } catch (e) { $main.innerHTML = `<div class="loading">Could not reach TagSense: ${esc(e.message)}</div>`; }
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
   showAccessLink();
-  showWhoami();
   render(false);
   schedule();
 })();
