@@ -1,6 +1,8 @@
-"""Access stage 2: QR reading on a scanner, events only, kept apart from the bin."""
+"""Access scanning: QR reading on a scanner, verified events, kept apart from the bin."""
+import base64
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -11,11 +13,14 @@ import cv2
 import numpy as np
 import pytest
 
+from app.access import codes
 from app.access.config import ScannerConfig, ScannerStore, parse_scanner
 from app.access.manager import AccessError, AccessManager, access_mqtt_config
 from app.access.mqtt import AVAILABILITY, AccessMqtt
 from app.access.qr import QrDecoder, blackout, fingerprint
 from app.access.scanner import DEBUG_MAX_FILES, Scanner
+from app.access.store import AccessStore, StaticRecord
+from app.access.verifier import Verifier
 from app.main import App, DEFAULT_OPTIONS
 from app.objects import ConfigError
 from app.sources import FetchError, Frame
@@ -23,7 +28,19 @@ from app.web import Api, ApiError
 
 from test_web import FakeMqtt, fake_source
 
-PAYLOAD = "TS1RAB12CD34EF56GH78JK"          # stands in for a secret code
+# A real signed static code: a fixed key and a record seeded into each test's store.
+KEY = b"k" * 32
+EXPIRY = codes.minutes(1893456000)        # 2030-01-01
+PAYLOAD = codes.static_code(KEY, "A", "TESTCODE", EXPIRY)
+FOREIGN = "TAGSENSE-TEST"                 # a QR code that is not ours
+
+
+def seed_codes(access_dir) -> AccessStore:
+    store = AccessStore(os.path.join(str(access_dir), "codes"))
+    with open(os.path.join(store.dir, "keys.json"), "w") as f:
+        json.dump({"static": {"v": "A", "key": base64.b64encode(KEY).decode()}}, f)
+    store.save_static([StaticRecord("TESTCODE", "Plumber", "A", EXPIRY)])
+    return store
 
 
 def qr_frame(payload=PAYLOAD, module_px=5.0, at=(700, 300), seed=0, size=(1280, 720)):
@@ -102,7 +119,8 @@ def scanner(tmp_path, frames, **cfg):
     c = ScannerConfig("door", "Door", "go2rtc", "doorbell", **({"window_s": 2.0,
                                                                "frame_interval_s": 0.0} | cfg))
     m = access_mqtt()
-    s = Scanner(c, SeqSource(frames), m, str(tmp_path), threading.Event())
+    s = Scanner(c, SeqSource(frames), m, str(tmp_path), threading.Event(),
+                verifier=Verifier(seed_codes(tmp_path)))
     return s, m
 
 
@@ -145,15 +163,15 @@ def test_blackout_makes_code_unreadable():
 
 # --- scanner window ----------------------------------------------------------------
 
-def test_scan_reports_code_without_its_content(tmp_path, caplog):
+def test_scan_verifies_code_without_leaking_it(tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     s, m = scanner(tmp_path, [qr_frame(None), qr_frame()])
     s.thread.start()
     s.scan()
     assert wait_for(done(s, m))
     ev = events(m)[0]
-    assert ev["event_type"] == "qr_seen" and ev["fingerprint"] == fingerprint(PAYLOAD)
-    assert ev["length"] == len(PAYLOAD) and ev["frames"] == 2
+    assert ev["event_type"] == "verified" and ev["label"] == "Plumber"
+    assert ev["code_type"] == "static" and ev["code_id"] == "TESTCODE" and ev["frames"] == 2
     # The payload must not appear anywhere: MQTT, logs, the published image.
     assert PAYLOAD.encode() not in m.client.all_bytes()
     assert PAYLOAD not in caplog.text
@@ -260,7 +278,8 @@ def test_scanner_config_validation():
 def make_app(tmp_path, **opts):
     return App(dict(DEFAULT_OPTIONS, go2rtc_url="http://x", **opts), mqtt=FakeMqtt(),
                source_factory=fake_source, data_dir=str(tmp_path),
-               access_mqtt=access_mqtt(), access_source_factory=lambda c, o: SeqSource([qr_frame()]))
+               access_mqtt=access_mqtt(),
+               access_source_factory=lambda c, o: SeqSource([qr_frame(FOREIGN)]))
 
 
 def test_access_off_by_default_and_not_imported(tmp_path):
@@ -301,7 +320,7 @@ def test_panel_manages_scanners_and_scans(tmp_path):
     m = acc.mqtt
     assert any("tagsense_access/front_door_code/config" in t for t, _, _ in m.client.published)
     api.access_scan(sid)
-    assert wait_for(lambda: any(e["event_type"] == "qr_seen"
+    assert wait_for(lambda: any(e["event_type"] == "unrecognised"     # a foreign code
                                 for e in api.access_status()["scanners"][0]["events"]))
     assert api.access_image(sid)
     with pytest.raises(ApiError, match="window_s"):
@@ -353,10 +372,10 @@ def test_stream_capture_reads_code_without_snapshots(tmp_path):
     s.scan()
     assert wait_for(done(s, m))
     ev = events(m)[0]
-    assert ev["event_type"] == "qr_seen" and ev["capture"] == "stream"
-    assert ev["frames_decoded"] >= ev["frames"] and "first_frame_s" in ev
+    assert ev["event_type"] == "verified" and ev["capture"] == "stream"
+    assert s.last_stats["frames_decoded"] >= ev["frames"] and "first_frame_s" in ev
     assert s.source.i == 0                      # no single-JPEG fetches at all
-    assert s.last_stats["result"] == "read" and s.stream is None
+    assert s.last_stats["result"] == "verified" and s.stream is None
     s.stop_event.set()
 
 
@@ -367,8 +386,8 @@ def test_stream_that_fails_falls_back_to_snapshots(tmp_path):
     s.scan()
     assert wait_for(done(s, m))
     ev = events(m)[0]
-    assert ev["event_type"] == "qr_seen" and ev["capture"] == "stream failed, snapshots"
-    assert "could not open" in ev["stream_error"] and s.source.i == 2
+    assert ev["event_type"] == "verified" and ev["capture"] == "stream, stream failed: snapshots"
+    assert "could not open" in s.last_stats["stream_error"] and s.source.i == 2
     s.stop_event.set()
 
 
@@ -400,7 +419,7 @@ def test_real_video_file_through_ffmpeg(tmp_path):
     s.thread.start()
     s.scan()
     assert wait_for(done(s, m), timeout=15)
-    assert events(m)[0]["event_type"] == "qr_seen" and events(m)[0]["capture"] == "stream"
+    assert events(m)[0]["event_type"] == "verified" and events(m)[0]["capture"] == "stream"
     s.stop_event.set()
 
 
@@ -421,3 +440,103 @@ def test_real_phone_screen_frames(testdata):
     dec = QrDecoder()
     misses = [f.name for f in files if not dec.decode(cv2.imread(str(f)))]
     assert not misses, misses
+
+
+# --- stage 3: verification in the scan window -----------------------------------------
+
+def two_codes(left, right):
+    """One frame with two codes side by side (e.g. a phone's share sheet)."""
+    img = qr_frame(left, at=(150, 250))
+    q = qr_frame(right, at=(750, 250))
+    img[:, 640:] = q[:, 640:]
+    return img
+
+
+def test_valid_code_next_to_foreign_one(tmp_path):
+    s, m = scanner(tmp_path, [two_codes(FOREIGN, PAYLOAD)])
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    kinds = [e["event_type"] for e in events(m)]
+    # The window ends at the verified code; the foreign one may or may not have
+    # been reported first (ZXing's order), but at most once and by fingerprint only.
+    assert "verified" in kinds and kinds.count("unrecognised") <= 1 and len(kinds) <= 2
+    for unrec in (e for e in events(m) if e["event_type"] == "unrecognised"):
+        assert set(unrec) == {"event_type", "scanned_at", "scanner", "fingerprint"}
+    img = cv2.imdecode(np.frombuffer(s.last_jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert QrDecoder().decode_all(img) == []          # both codes blacked out
+    s.stop_event.set()
+
+
+def bad_code(i):
+    """Well-formed but wrongly signed static code."""
+    return codes.static_code(b"x" * 32, "A", f"BADCODE{codes.B32[i]}", EXPIRY)
+
+
+def test_same_bad_code_counts_once_and_invalid_reveals_nothing(tmp_path):
+    s, m = scanner(tmp_path, [qr_frame(bad_code(0))] * 30, window_s=1.0)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    evs = events(m)
+    assert [e["event_type"] for e in evs] == ["invalid", "scan_timeout"]
+    assert set(evs[0]) == {"event_type", "scanned_at", "scanner", "fingerprint"}
+    assert not s.verifier.locked_until("door")
+    s.stop_event.set()
+
+
+def test_four_bad_codes_lock_out_and_a_locked_scanner_does_not_look(tmp_path):
+    frames = [qr_frame(bad_code(i), seed=i) for i in range(4)] + [qr_frame()]
+    s, m = scanner(tmp_path, frames, window_s=5)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    kinds = [e["event_type"] for e in events(m)]
+    assert kinds == ["invalid"] * 4 + ["locked_out"]        # the valid code is never reached
+    fetched = s.source.i
+    s.scan()                                               # locked: no frames are fetched
+    assert wait_for(lambda: len(events(m)) == 6 and not s.scanning)
+    assert events(m)[-1]["event_type"] == "locked_out" and s.source.i == fetched
+    s.stop_event.set()
+
+
+def test_debug_frames_never_hold_a_readable_tagsense_code(tmp_path):
+    s, m = scanner(tmp_path, [two_codes(FOREIGN, PAYLOAD)], debug_frames=True)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    saved = [cv2.imread(os.path.join(s.debug_dir, f)) for f in s.debug_files()]
+    assert saved
+    texts = {r.text for img in saved for r in QrDecoder().decode_all(img)}
+    assert texts == {FOREIGN}                       # ours blacked out, the test code kept
+    s.stop_event.set()
+
+
+def test_auto_capture_snapshots_until_the_stream_runs(tmp_path):
+    class SlowStart(FakeCapture):
+        def read(self):
+            if self.i == 0:
+                time.sleep(0.6)                    # the stream takes a while to start
+            return super().read()
+    s, m = scanner(tmp_path, [qr_frame(None)], window_s=3)
+    s.cfg = ScannerConfig(**{**s.cfg.to_dict(), "capture": "auto", "camera_entity": "camera.door"})
+    s.source = StreamSource([qr_frame(None)])       # go2rtc: has the stream URL
+    s.snapshot_source = SeqSource([qr_frame(None)])
+    s.capture_factory = lambda url: SlowStart([qr_frame(None)] * 5 + [qr_frame()] * 50)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["capture"] == "auto"
+    assert s.snapshot_source.i >= 1 and s.last_stats["stream_from_s"] >= 0.5
+    assert s.last_stats["first_frame_s"] < s.last_stats["stream_from_s"]
+    s.stop_event.set()
+
+
+def test_auto_capture_config_rules():
+    both = {"name": "Door", "source": "go2rtc", "go2rtc_stream": "door", "camera_entity": "camera.door"}
+    assert parse_scanner(both).capture == "auto"                     # default with both
+    assert parse_scanner(both | {"capture": "stream"}).capture == "stream"
+    assert parse_scanner({**both, "camera_entity": ""}).capture == "stream"
+    with pytest.raises(ConfigError, match="auto capture needs both"):
+        parse_scanner({**both, "camera_entity": "", "capture": "auto"})

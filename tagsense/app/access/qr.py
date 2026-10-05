@@ -51,6 +51,13 @@ class QrDecoder:
         self._cv = {n: self._cv[n]() for n in decoders if n in self._cv}
 
     def decode(self, bgr: np.ndarray, crop: Crop = (0, 0, 1, 1)) -> QrRead | None:
+        reads = self.decode_all(bgr, crop, first_only=True)
+        return reads[0] if reads else None
+
+    def decode_all(self, bgr: np.ndarray, crop: Crop = (0, 0, 1, 1),
+                   first_only: bool = False) -> list[QrRead]:
+        """Every code found in the crop (a phone can show several). The OpenCV
+        back ends find at most one."""
         t0 = time.perf_counter()
         px1, py1, px2, py2 = crop_pixels(bgr.shape, crop)
         gray = cv2.cvtColor(bgr[py1:py2, px1:px2], cv2.COLOR_BGR2GRAY)
@@ -58,13 +65,16 @@ class QrDecoder:
         up = None
         for name in self.names:
             if name == "zxing":
+                found = []
                 for r in zxingcpp.read_barcodes(gray, formats=ZXING_FORMATS):
                     if r.valid and r.text:
                         p = r.position
                         quad = np.float32([[p.top_left.x, p.top_left.y], [p.top_right.x, p.top_right.y],
                                            [p.bottom_right.x, p.bottom_right.y],
                                            [p.bottom_left.x, p.bottom_left.y]]) + offset
-                        return QrRead(r.text, quad, name, (time.perf_counter() - t0) * 1000.0)
+                        found.append(QrRead(r.text, quad, name, (time.perf_counter() - t0) * 1000.0))
+                if found:
+                    return found[:1] if first_only else found
                 continue
             if up is None:
                 up = cv2.resize(gray, None, fx=UPSCALE, fy=UPSCALE, interpolation=cv2.INTER_CUBIC)
@@ -74,9 +84,9 @@ class QrDecoder:
                 continue
             if text and pts is not None:
                 quad = pts.reshape(4, 2) / UPSCALE + offset
-                return QrRead(text, quad.astype(np.float32), name,
-                              (time.perf_counter() - t0) * 1000.0)
-        return None
+                return [QrRead(text, quad.astype(np.float32), name,
+                               (time.perf_counter() - t0) * 1000.0)]
+        return []
 
 
 def blackout(bgr: np.ndarray, quads: list[np.ndarray], grow: float = 1.25) -> np.ndarray:

@@ -14,7 +14,7 @@ from ..detector import validate_crop
 from ..objects import ID_RE, SOURCES, ConfigError, slugify
 
 RESERVED_IDS = {"availability"}
-CAPTURE_MODES = ("stream", "snapshot")
+CAPTURE_MODES = ("auto", "stream", "snapshot")
 WINDOW_S = (5, 120)
 INTERVAL_S = (0.0, 5.0)
 
@@ -34,7 +34,7 @@ class ScannerConfig:
     window_s: float = 20.0          # how long one trigger keeps scanning
     frame_interval_s: float = 0.3   # pause between frames within the window
     debug_frames: bool = False      # keep raw scan frames (feasibility testing only)
-    capture: str = "stream"         # "stream" (go2rtc video, held open) or "snapshot"
+    capture: str = "stream"         # "auto", "stream" (go2rtc video held open) or "snapshot"
 
     @property
     def crop(self):
@@ -99,13 +99,18 @@ def parse_scanner(raw: dict, where: str = "scanner") -> ScannerConfig:
         window_s=_num(raw, "window_s", 20, *WINDOW_S, where),
         frame_interval_s=_num(raw, "frame_interval_s", 0.3, *INTERVAL_S, where),
         debug_frames=_bool(raw.get("debug_frames", False)),
-        capture=_capture(raw, where))
+        capture=_capture(raw, where, stream, entity))
 
 
-def _capture(raw: dict, where: str) -> str:
-    v = str(raw.get("capture") or "stream")
+def _capture(raw: dict, where: str, stream: str, entity: str) -> str:
+    """auto (snapshots from the HA camera until the go2rtc stream runs) is the
+    default when both are set; existing scanners keep the mode they saved."""
+    v = str(raw.get("capture") or ("auto" if stream and entity else "stream"))
     if v not in CAPTURE_MODES:
         raise ConfigError(f"{where}: capture must be one of {CAPTURE_MODES}")
+    if v == "auto" and not (stream and entity):
+        raise ConfigError(f"{where}: auto capture needs both a go2rtc stream and a "
+                          "Home Assistant camera")
     return v
 
 

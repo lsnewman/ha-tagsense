@@ -27,8 +27,10 @@ BASE = "tagsense/access"
 NODE = "tagsense_access"
 AVAILABILITY = f"{BASE}/availability"
 COMMANDS = ("scan",)
-# Stage 2 events; verification results are added with signed codes.
-EVENT_TYPES = ("qr_seen", "scan_timeout")
+# verified is the only one an automation should act on; the rest report
+# attempts (invalid, replayed, ...) so they can be notified on.
+EVENT_TYPES = ("verified", "invalid", "not_yet_valid", "expired", "replayed", "revoked",
+               "locked_out", "unrecognised", "unavailable", "scan_timeout")
 
 
 class Topics:

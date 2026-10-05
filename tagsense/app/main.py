@@ -98,8 +98,9 @@ class App:
         off (fail closed) and the bin sensor carries on."""
         from .access.manager import AccessError, AccessManager, make_source as access_source
         try:
+            kw = {"snapshot_factory": lambda c, o: None} if source_factory else {}
             self.access = AccessManager(self.opts, self.data_dir, VERSION, mqtt=mqtt,
-                                        source_factory=source_factory or access_source)
+                                        source_factory=source_factory or access_source, **kw)
         except (AccessError, ConfigError, ValueError, OSError) as e:
             self.access_error = str(e)
             log.error("access: not started: %s", e)

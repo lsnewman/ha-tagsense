@@ -9,10 +9,12 @@ import zipfile
 
 from ..mqtt_ha import MqttConfig, supervisor_mqtt_config
 from ..objects import ConfigError, slugify, unique_id
-from ..sources import build_source
+from ..sources import HaCameraSource, build_source
 from .config import ScannerConfig, ScannerStore, parse_scanner, validate_scanners
 from .mqtt import AccessMqtt
 from .scanner import Scanner
+from .store import AccessStore
+from .verifier import Verifier
 
 log = logging.getLogger("tagsense.access")
 
@@ -35,6 +37,15 @@ def make_source(cfg: ScannerConfig, opts: dict):
     return src
 
 
+def make_snapshot_source(cfg: ScannerConfig, opts: dict):
+    """Auto capture: the HA camera, used for snapshots until the stream runs."""
+    if cfg.capture != "auto" or not cfg.camera_entity:
+        return None
+    src = HaCameraSource(cfg.camera_entity)
+    src.timeout = SNAPSHOT_TIMEOUT_S
+    return src
+
+
 def access_mqtt_config(opts: dict) -> MqttConfig:
     """The broker of the main connection, with the access module's own login."""
     user, pw = opts.get("access_mqtt_username"), opts.get("access_mqtt_password")
@@ -54,12 +65,17 @@ def access_mqtt_config(opts: dict) -> MqttConfig:
 
 class AccessManager:
     def __init__(self, opts: dict, data_dir: str, version: str, mqtt=None,
-                 source_factory=make_source):
+                 source_factory=make_source, snapshot_factory=make_snapshot_source,
+                 capture_factory=None):
         self.opts = opts
         self.dir = os.path.join(data_dir, "access")
         os.makedirs(self.dir, mode=0o700, exist_ok=True)
         os.chmod(self.dir, 0o700)
         self.source_factory = source_factory
+        self.snapshot_factory = snapshot_factory
+        self.capture_factory = capture_factory        # tests: a fake video capture
+        self.codes = AccessStore(self.dir)             # keys, people, static codes, lockouts
+        self.verifier = Verifier(self.codes)
         self.store = ScannerStore(self.dir)
         self.configs = self.store.load()
         self.lock = threading.RLock()
@@ -71,8 +87,11 @@ class AccessManager:
 
     def _build(self):
         self.stop_event = threading.Event()
+        extra = {"capture_factory": self.capture_factory} if self.capture_factory else {}
         self.scanners = {c.id: Scanner(c, self.source_factory(c, self.opts), self.mqtt, self.dir,
-                                       self.stop_event) for c in self.configs}
+                                       self.stop_event, verifier=self.verifier,
+                                       snapshot_source=self.snapshot_factory(c, self.opts), **extra)
+                         for c in self.configs}
 
     def start(self):
         self.mqtt.start()
