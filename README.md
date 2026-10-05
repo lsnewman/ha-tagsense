@@ -36,7 +36,7 @@ it either finds your specific tag or it doesn't.
    bad ones, so a corrupt frame is never treated as "absent". A frame where
    the tag is found always counts, whatever its score.
 3. **Look for the tag** in a configurable crop of the frame, using OpenCV's
-   AprilTag (`tag16h5`) detector. Decodes with an implausible shape are
+   AprilTag detector (`tag16h5` by default; see [Tag families](#tag-families)). Decodes with an implausible shape are
    rejected: too elongated (`max_aspect`) or far smaller than usual
    (`min_size_ratio`). Decodes of other tag IDs are ignored, but
    logged and drawn on the debug image as `ignored: id N`.
@@ -62,6 +62,21 @@ Check now when the object has just been moved triggers a short series of
 confirmation checks, so absent is confirmed in about a minute and a half rather
 than after several polls.
 
+## Access codes at the door (optional)
+
+TagSense can also read QR codes from a doorbell camera. A visitor rings and
+holds up a code on their phone, and TagSense reports whether it is valid:
+- a rotating **pass** for Home Assistant users;
+- a time-limited **static code** to send to a tradesperson.
+
+It is off by default and needs its own MQTT login. It **never unlocks
+anything**: your automations decide what a verified code does, and for a lock
+they can ask TagSense to confirm each event first. See the app's
+Documentation tab. A ready-made blueprint for a lock (confirm, unlock, lock
+again after the auto-lock time) is one click away:
+
+[![Import the TagSense unlock blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml)
+
 ## Requirements
 
 - Home Assistant OS or Supervised (apps need the Supervisor). Built for
@@ -73,7 +88,7 @@ than after several polls.
     port 1984). This is recommended because it gives full-resolution frames.
   - a **Home Assistant camera entity**, read through the camera proxy. These
     are often lower resolution, which leaves less margin for decoding.
-- A printed **tag16h5 AprilTag** (see [The tag](#the-tag)).
+- A printed AprilTag, **tag16h5** by default (see [The tag](#the-tag)).
 
 ## Installation
 
@@ -135,7 +150,7 @@ logged-in Home Assistant users can open it.
 - **Diagnostics:** fetch and detect times, discard rate, sanity ratio, crop
   brightness and contrast, fetch errors, and how much position data has been
   learned.
-- **Print tag:** the object's tag16h5 ID as a **PNG** for paper, or an
+- **Print tag:** the object's tag (in its family) as a **PNG** for paper, or an
   **SVG** sized in millimetres for a cutter or a 3D print. The white margin
   can be turned off. See [The tag](#the-tag).
 - **Delete:** removes the object, its Home Assistant entities and its saved
@@ -143,10 +158,12 @@ logged-in Home Assistant users can open it.
 
 ## The tag
 
-- **Family:** `tag16h5`, any ID from 0 to 29 (default 5). This family has big
-  cells, so it decodes at small sizes and steep angles. Its trade-off is that
-  random textures occasionally decode as a valid ID. The ID filter and shape
-  gate handle that.
+- **Family:** `tag16h5` by default, any ID from 0 to 29 (default 5). This
+  family has big cells, so it decodes at small sizes and steep angles. Its
+  trade-off is that random textures occasionally decode as a valid ID. The
+  ID filter and shape gate handle that. Other families can be chosen per
+  object in the panel, but are untested on a real camera: see
+  [Tag families](#tag-families).
 - **Quiet zone:** the black border needs a light area around it, about one
   cell wide (a cell is a sixth of the black square). Without it the tag will
   not decode. The printed tags include a white margin for this. Leave it off
@@ -169,6 +186,34 @@ The panel's **Print tag** card on each object's page produces:
   each shape its own filament for a two-colour 3D print, or use just the black
   shape with a vinyl cutter.
 
+## Tag families
+
+Each object's form in the panel has a **Tag family** choice next to the tag
+ID. The default is tag16h5, and existing objects stay on it. The
+detector settings were tuned on real frames for **tag16h5 only**. The others
+use the same settings and have **only been tested on synthetic frames**.
+
+| Family | IDs | Data grid | Phantom resistance | Size needed |
+|---|---|---|---|---|
+| `tag16h5` (default) | 0–29 | 4x4 | lowest | smallest |
+| `tag25h9` | 0–34 | 5x5 | much better | a little bigger |
+| `tag36h10` | 0–2319 | 6x6 | high | about 1.25x |
+| `tag36h11` | 0–586 | 6x6 | highest | about 1.25x |
+
+- A smaller grid means bigger cells, so the tag decodes when it is smaller,
+  further away or blurred. It also means a lower Hamming distance, so random
+  texture decodes as a valid tag more often. On 2000 random textures,
+  tag16h5 produced 40 false decodes, tag25h9 1, and the 36-bit families
+  none.
+- A larger grid needs more pixels per cell. In the synthetic tests the 6x6
+  families needed about 1.25x the tag size of tag16h5 to decode as reliably
+  when blurred.
+
+The tag ID list in the form follows the family, and *Print tag* prints in the
+object's family. Objects with different families can share a camera. If you
+switch an object to a new tag, press *Reset learned position* once it is in
+place. The measurements and how they were made are in [SPEC.md](SPEC.md).
+
 ## Objects
 
 Objects are managed in the TagSense panel and stored by the app in
@@ -178,7 +223,8 @@ Objects are managed in the TagSense panel and stored by the app in
 |---|---|
 | Name | What the tag is on. It names the device ("TagSense Bin") and its main sensor. It can be changed at any time. |
 | ID | A short, stable identifier (lowercase letters, digits, `_`), used in entity IDs, MQTT topics and the data folder. It is made from the name unless you type one, and **cannot be changed later**. Renaming the object keeps its ID, so its entities and history stay. |
-| Tag ID | The tag16h5 ID on this object (0–29). Two objects on the same camera need different IDs. The same ID on different cameras is fine. |
+| Tag family | The AprilTag family of the printed tag: `tag16h5` (the default, and the only one tested on a real camera), `tag25h9`, `tag36h10` or `tag36h11`. See [Tag families](#tag-families). |
+| Tag ID | The tag ID on this object: 0–29 for tag16h5, 0–34 for tag25h9, 0–2319 for tag36h10, 0–586 for tag36h11. Two objects on the same camera need different tags (same family and ID). The same ID on different cameras is fine. |
 | Camera | A **go2rtc stream** (fetched as `<go2rtc_url>/api/frame.jpeg?src=<stream>`; choose the highest-resolution stream that connects directly to the camera) or a **Home Assistant camera** entity, read through the camera proxy. Tick **Fallback** to try the other source when the main one fails. A go2rtc object then falls back to its Home Assistant camera entity (often lower resolution), and a Home Assistant camera object to its go2rtc stream. |
 
 Objects on the same stream (or camera entity) share one camera worker: each
@@ -316,6 +362,17 @@ is turned 180°; telling those apart would need a second tag with another ID
 
 ## Upgrading
 
+- **To 0.5.0:**
+  - **Nothing changes for your objects** unless you opt in: existing objects
+    stay on tag16h5, and access codes are off by default.
+  - **The TagSense sidebar entry now shows for every Home Assistant user**,
+    but non-admins only see their own door pass.
+  - **Moving from a "TagSense (dev)" install:** export from it and import
+    into this one. The objects bring their history, and the access scanners
+    their settings. Passes, static codes and the confirm token are never
+    exported: re-add the passes, re-issue the codes, and update `secrets.yaml`
+    and the `rest_command` URL (this app's hostname) from the *Confirm events*
+    card.
 - **To 0.4.3:** new *Rotation*, *Rotation steps* and *Set current orientation
   as 0°* entities appear. 0° is set from the first sighting after the update;
   press the button if the object was not in its normal orientation then.
@@ -335,6 +392,8 @@ is turned 180°; telling those apart would need a second tag with another ID
   frames hit instead of 5 of 5, which is still enough. Rain, fog and
   headlight glare have not been specifically tested. Watch Crop brightness
   and Crop contrast next to any missed detections at night.
+- **Only tag16h5 is tested on a real camera.** The other tag families
+  have only been tested on synthetic frames.
 - **Thin decode margin.** A small tag seen at a steep angle is near the limit
   of what the detector can read. A larger print helps more than any setting.
 - **Tested on one setup:** a TP-Link Tapo camera through Frigate's go2rtc,
@@ -359,7 +418,13 @@ cd tagsense
 pip install -r requirements.txt pytest
 python -m pytest tests
 python -m app.check ../test-frames --save-annotated /tmp/annotated
+python -m app.sweep ../test-frames --ablation   # per-family margins and phantoms
 ```
+
+`app/sweep.py` compares the tag families and the detector parameters. Its
+sections are synthetic tags, real-geometry transplants, phantom counts and an
+ablation of each tuned parameter. The results are recorded in
+[SPEC.md](SPEC.md).
 
 `app/check.py` runs the detector and sanity check over a folder of frames. It
 expects subfolders named `present/`, `absent/` and `smear/` (or `corrupt/`), and

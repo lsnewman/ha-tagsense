@@ -61,6 +61,18 @@ class CheckLog:
         if self._lines > 2 * max(len(self._records), 100):
             self._compact()
 
+    def merge(self, records: list) -> int:
+        """Add records from an import, skipping any already here (same time `t`),
+        so importing back and forth never doubles anything. Returns how many were added."""
+        have = {r["t"] for r in self._records}
+        new = [r for r in records if isinstance(r, dict) and isinstance(r.get("t"), (int, float))
+               and r["t"] not in have]
+        if new:
+            self._records = sorted(self._records + new, key=lambda r: r["t"])
+            self._prune()
+            self._compact()
+        return len(new)
+
     def points(self) -> list[dict]:
         self._prune()
         return list(self._records)

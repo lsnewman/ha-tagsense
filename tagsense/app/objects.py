@@ -10,6 +10,8 @@ import re
 import shutil
 from dataclasses import asdict, dataclass
 
+from .detector import DEFAULT_FAMILY, FAMILIES, family_info
+
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 RESERVED_IDS = {"availability"}
 SOURCES = ("go2rtc", "ha_camera")
@@ -33,6 +35,7 @@ class ObjectConfig:
     go2rtc_stream: str = ""
     camera_entity: str = ""
     fallback: bool = False      # if the main source fails, try the other one
+    tag_family: str = DEFAULT_FAMILY
 
     @property
     def fallback_source(self) -> str | None:
@@ -69,8 +72,12 @@ def parse_one(raw: dict, where: str = "object") -> ObjectConfig:
         tag_id = int(raw.get("tag_id", 5))
     except (TypeError, ValueError):
         raise ConfigError(f"{where} ({name}): tag_id must be a number") from None
-    if not 0 <= tag_id <= 29:
-        raise ConfigError(f"{where} ({name}): tag_id must be 0-29 (tag16h5)")
+    family = str(raw.get("tag_family") or DEFAULT_FAMILY)
+    if family not in FAMILIES:
+        raise ConfigError(f"{where} ({name}): tag_family must be one of {', '.join(FAMILIES)}")
+    n = family_info(family).id_count
+    if not 0 <= tag_id < n:
+        raise ConfigError(f"{where} ({name}): tag_id must be 0-{n - 1} ({family})")
     source = str(raw.get("source") or "go2rtc")
     if source not in SOURCES:
         raise ConfigError(f"{where} ({name}): source must be one of {SOURCES}")
@@ -88,7 +95,7 @@ def parse_one(raw: dict, where: str = "object") -> ObjectConfig:
         raise ConfigError(f"{where} ({name}): a fallback needs a camera_entity to fall back to")
     if fallback and source == "ha_camera" and not stream:
         raise ConfigError(f"{where} ({name}): a fallback needs a go2rtc_stream to fall back to")
-    return ObjectConfig(oid, name, tag_id, source, stream, entity, fallback)
+    return ObjectConfig(oid, name, tag_id, source, stream, entity, fallback, family)
 
 
 def validate_list(objs: list[ObjectConfig]) -> list[ObjectConfig]:
@@ -97,10 +104,10 @@ def validate_list(objs: list[ObjectConfig]) -> list[ObjectConfig]:
         if o.id in seen_ids:
             raise ConfigError(f"duplicate object id {o.id!r}: choose a distinct id or name")
         seen_ids.add(o.id)
-        key = (o.camera_key[:2], o.tag_id)
+        key = (o.camera_key[:2], o.tag_family, o.tag_id)
         if key in seen_tags:
-            raise ConfigError(f"{o.name} and {seen_tags[key]} use tag {o.tag_id} on the same "
-                              "camera; give them different tags")
+            raise ConfigError(f"{o.name} and {seen_tags[key]} use {o.tag_family} tag {o.tag_id} "
+                              "on the same camera; give them different tags")
         seen_tags[key] = o.name
     return objs
 

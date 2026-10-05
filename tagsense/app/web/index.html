@@ -107,7 +107,10 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
 <header>
   <h1><a href="#/" style="color:inherit">TagSense</a></h1>
   <span class="muted small" id="version"></span>
+  <span class="muted small" id="whoami" style="margin-left:10px"></span>
   <span class="spacer"></span>
+  <a class="btn" href="#/pass" id="pass-link" style="display:none">My pass</a>
+  <a class="btn" href="#/access" id="access-link" style="display:none">Access</a>
   <a class="btn" href="#/new">Add object</a>
 </header>
 <main id="main"><div class="loading">Loading…</div></main>
@@ -146,15 +149,78 @@ const chip = (st, reason) => `<span class="chip ${esc(st)}">${esc(st)}</span>
 const objById = id => state.objects.find(o => o.id === id);
 function fmtNum(v, d = 1) { return v === null || v === undefined ? "–" : (typeof v === "number" ? v.toFixed(d) : esc(v)); }
 
+// Read-only (0.5.0b7): checks that the panel can tell who is using it, ahead of
+// the "My pass" page. It changes nothing.
+async function showWhoami() {
+  let w = null;
+  try {
+    w = await api("whoami");
+    const el = document.getElementById("whoami");
+    el.textContent = !w.header_present ? "signed-in user: not provided by Home Assistant"
+      : w.lookup_error ? `signed in as ${w.name || "?"} · admin status unknown (${w.lookup_error})`
+      : `signed in as ${w.name || "?"} · ${w.found ? (w.admin ? "admin" : "not an admin") : "not found in the user list"}`;
+    if (w.users && w.users.length) el.title = "Home Assistant users as TagSense sees them:\n" +
+      w.users.map(u => `${u.name}: ${u.admin ? "admin" : "not an admin"}${u.active ? "" : " (inactive)"}`).join("\n");
+  } catch (e) { /* older back end */ }
+  return w;
+}
+
+// ---------- "My pass" (every signed-in user) --------------------------------
+// The code is drawn by the server every period, so the phone's clock does not
+// matter. Only the signed-in user's own pass is ever returned.
+let passTimer = null, passTick = null;
+function passInverted() { try { return localStorage.getItem("tagsense-pass-invert") === "1"; } catch (e) { return false; } }
+function setPassInverted(on) {
+  try { localStorage.setItem("tagsense-pass-invert", on ? "1" : "0"); } catch (e) { /* not remembered */ }
+  const img = document.getElementById("pass-img");
+  if (img) { img.src = `api/pass.png?t=${Date.now()}${on ? "&invert=1" : ""}`; img.style.background = on ? "#000" : "#fff"; }
+}
+async function passPage(w) {
+  clearTimeout(passTimer); clearInterval(passTick);
+  let info;
+  try { info = await api("pass"); }
+  catch (e) {
+    $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto"><h2>TagSense</h2>
+      <p class="muted">${esc(e.message === "not signed in" ? "Open TagSense from the Home Assistant sidebar." : e.message)}</p></div>`;
+    return;
+  }
+  if (!info.available || !info.has_pass) {
+    $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto"><h2>${info.available ? "No pass yet" : "Nothing here for you"}</h2>
+      <p class="muted">${info.available
+        ? "You don't have a door pass. Ask a Home Assistant admin to add one (TagSense → Access → Passes)."
+        : "TagSense's settings are for Home Assistant admins."}</p></div>`;
+    return;
+  }
+  $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto;text-align:center">
+    <h2 style="margin-bottom:4px">${esc(info.label)}</h2>
+    <div class="muted small">Ring the doorbell, then hold this up to the camera.</div>
+    <img id="pass-img" alt="Your door pass" src="api/pass.png?t=${Date.now()}${passInverted() ? "&invert=1" : ""}"
+      style="width:100%;max-width:440px;margin:14px auto;display:block;background:${passInverted() ? "#000" : "#fff"};border-radius:10px">
+    <div class="small"><span id="pass-left"></span></div>
+    <label class="inline small" style="margin-top:8px"><input type="checkbox" ${passInverted() ? "checked" : ""}
+      onchange="setPassInverted(this.checked)"> Invert colours (white on black: may help if the screen glares on camera)</label>
+    <div class="hint" style="margin-top:8px">Screen brightness medium-high works best; tilt the phone away from lights.
+      The code changes every ${info.period} s and each one works once.</div></div>`;
+  let left = info.seconds_left;
+  const show = () => { const el = document.getElementById("pass-left"); if (el) el.textContent = `New code in ${Math.max(0, Math.ceil(left))} s`; };
+  show();
+  passTick = setInterval(() => { left -= 1; show(); }, 1000);
+  passTimer = setTimeout(() => passPage(w), (left + 0.4) * 1000);
+}
+function showAccessLink() {
+  const a = state.access || {};
+  document.getElementById("access-link").style.display = a.enabled || a.error ? "" : "none";
+}
 async function refresh() {
   try { state = await api("state"); } catch (e) { return; }
+  showAccessLink();
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
   render(true);
 }
 function schedule(ms = 3000) { clearInterval(timer); timer = setInterval(refresh, ms); }
 
 // ---------- router --------------------------------------------------------
-function route() { editorDirty = false; render(false); }
+function route() { editorDirty = false; clearTimeout(passTimer); clearInterval(passTick); render(false); }
 window.addEventListener("hashchange", route);
 
 function render(isRefresh) {
@@ -164,6 +230,10 @@ function render(isRefresh) {
   if (h === "/new") return isRefresh ? null : objectForm(null);
   if ((m = h.match(/^\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : objectForm(m[1]);
   if ((m = h.match(/^\/obj\/([a-z0-9_]+)$/))) return detail(m[1], isRefresh);
+  if (h === "/pass") return isRefresh ? null : passPage();
+  if (h === "/access") return accessPage(isRefresh);
+  if (h === "/access/new") return isRefresh ? null : scannerForm(null);
+  if ((m = h.match(/^\/access\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : scannerForm(m[1]);
   location.hash = "#/";
 }
 
@@ -171,26 +241,35 @@ function render(isRefresh) {
 function overview() {
   if (!state.objects.length) {
     $main.innerHTML = `<div class="card"><h2>No objects yet</h2>
-      <p class="muted">Add the first thing to watch: give it a name, pick the tag ID printed on it and the camera that sees it.</p>
-      <a class="btn" href="#/new">Add object</a></div>`;
+      <p class="muted">Add the first thing to watch: give it a name, pick the tag ID printed on it and the camera that sees it.
+        Or import objects exported from another TagSense install below.</p>
+      <a class="btn" href="#/new">Add object</a></div>${transferCard()}`;
+    transferOpen = true;                    // open by default; also keeps refreshes from wiping a paste
+    toggleTransfer(true);
     return;
   }
   $main.innerHTML = `<div class="grid">${state.objects.map(o => `
     <div class="card">
       <div class="row"><h2 style="flex:1"><a href="#/obj/${o.id}">${esc(o.name)}</a></h2>${chip(o.state, "")}</div>
-      <div class="muted small">tag ${o.tag_id} · ${esc(o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity)} · ${esc(o.reason)}</div>
+      <div class="muted small">${esc(tagLabel(o))} · ${esc(o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity)} · ${esc(o.reason)}</div>
       ${o.alert ? `<div class="notice alert small" style="margin:10px 0 0">${esc(o.alert.message)}</div>` : ""}
       ${o.has_image ? `<img class="thumb" src="api/objects/${o.id}/last.jpg?t=${encodeURIComponent(o.last_check || "")}" alt="">`
                     : `<div class="thumb empty">no image yet</div>`}
       <div class="row"><span class="muted small" style="flex:1">checked ${ago(o.last_check)}${o.settings.enabled ? "" : " · disabled"}</span>
         <button onclick="checkNow('${o.id}', this)" ${o.settings.enabled ? "" : "disabled"}>Check now</button>
         <a class="btn" href="#/obj/${o.id}">Open</a></div>
-    </div>`).join("")}</div>
+    </div>`).join("")}</div>${transferCard()}`;
+  if (transferOpen) toggleTransfer(true);
+}
+const transferCard = () => `
     <div class="card" style="margin-top:16px"><div class="row"><h3 style="flex:1;margin:0">Export / import</h3>
       <button onclick="toggleTransfer()" id="t-toggle">Show</button></div>
       <div id="transfer" style="display:none">
-        <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install.
-          Importing adds new objects and updates ones with the same id; objects not in the text are kept.</p>
+        <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install
+          (for example between TagSense and TagSense (dev)). It includes each object's last 24 hours of chart history and its
+          learned position. Importing adds new objects and updates ones with the same id; objects not in the text are kept.
+          History is merged without doubling, and the learned position is taken only if the imported one is newer.
+          With access codes on, it also carries the scanners' settings (camera, scan area, capture), but never keys, passes or codes.</p>
         <textarea id="t-export" readonly></textarea>
         <div class="row" style="margin-top:8px"><button onclick="copyExport()">Copy</button>
           <button onclick="downloadExport()">Download</button><span class="muted small" id="t-copied"></span></div>
@@ -198,8 +277,6 @@ function overview() {
         <textarea id="t-import" placeholder="Paste exported text here"></textarea>
         <div class="row" style="margin-top:8px"><button class="primary" onclick="importObjects()">Import</button></div>
         <div class="error" id="t-error"></div></div></div>`;
-  if (transferOpen) toggleTransfer(true);
-}
 let transferOpen = false;
 async function toggleTransfer(keep) {
   const el = document.getElementById("transfer");
@@ -230,8 +307,15 @@ async function importObjects() {
   if (!confirm("Import these objects? Objects with the same id are updated (their settings too); new ones are added.")) return;
   try {
     const r = await api("import", { method: "POST", body: { text } });
-    alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.`);
+    const hist = Object.entries(r.history || {}).map(([id, h]) =>
+      `${id}: ${h.checks_added} chart records${h.reference_taken ? ", learned position" : ""}`).join("; ");
+    const sc = r.scanners || {};
+    const scText = sc.skipped ? `\nScanners not imported: ${sc.skipped}.`
+      : (sc.added || sc.updated) ? `\nScanners added: ${(sc.added || []).join(", ") || "none"}; updated: ${(sc.updated || []).join(", ") || "none"}.` : "";
+    alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.` +
+      (hist ? `\nHistory merged: ${hist}.` : "") + scText);
     document.getElementById("t-import").value = "";
+    transferOpen = false;                   // let the refresh redraw the list with the new objects
     await refresh();
   } catch (e) { err.textContent = e.message; }
 }
@@ -259,29 +343,11 @@ function detail(id, isRefresh) {
 
     <div class="cols">
       <div class="card">
-        <div class="row"><h3 style="flex:1;margin:0">Search area</h3>
-          <button onclick="loadFrame(true)">Refresh frame</button>
-          <button onclick="setCrop([0,0,1,1])">Whole frame</button>
-          <button id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>
-          <button onclick="setCrop(savedCrop())">Undo</button>
-          <button class="primary" id="crop-save" onclick="saveCrop()" disabled>Save</button></div>
-        <p class="muted small">Drag the box to move it, drag a corner to resize, or drag on the image to draw a new one.
-          It must cover every spot where the object might be.</p>
-        <div class="editor" id="editor"><div class="loading" id="frame-loading">Fetching a frame…</div>
-          <img id="frame" alt="" style="display:none">
-          <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
-            <path id="dim" fill="rgba(0,0,0,.6)" fill-rule="evenodd" d=""/><g id="marks"></g></svg>
-          <div class="crop" id="crop" style="display:none">
-            <div class="handle h-nw" data-h="nw"></div><div class="handle h-ne" data-h="ne"></div>
-            <div class="handle h-sw" data-h="sw"></div><div class="handle h-se" data-h="se"></div></div>
-        </div>
-        <div class="legend small muted" style="margin-top:8px">
-          <span><i style="background:var(--crop)"></i>search area</span>
-          <span><i style="background:var(--quad)"></i>last detection</span>
+        ${editorHtml("Search area", "It must cover every spot where the object might be.",
+          `<button type="button" id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>`,
+          `<span><i style="background:var(--quad)"></i>last detection</span>
           <span><i style="background:var(--usual)"></i>usual position (learned)</span>
-          <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>
-          <span id="crop-values"></span></div>
-        <div class="error" id="crop-error"></div>
+          <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>`)}
       </div>
 
       <div class="stack">
@@ -316,7 +382,7 @@ function detail(id, isRefresh) {
     </div>
     <div class="card"><h3>State changes</h3><div id="d-snaps" class="small"><span class="muted">None yet.</span></div>
       <div class="hint">The checked image each time the reported state changed (the last 20 are kept).</div></div>
-    <div class="card" id="print-card"><h3>Print tag ${o.tag_id}</h3>
+    <div class="card" id="print-card"><h3>Print ${esc(tagLabel(o))}</h3>
       <div class="cols" style="grid-template-columns:minmax(0,1fr) 160px;align-items:start">
         <div>
           <div class="row">
@@ -339,6 +405,7 @@ function detail(id, isRefresh) {
     <div class="card"><div class="row"><span class="muted small" style="flex:1">Deleting removes this object, its entities and its saved state.</span>
       <button class="danger" onclick="deleteObject('${id}')">Delete ${esc(o.name)}</button></div></div>
   </div>`;
+  editorCtx = objectEditor(id);
   initEditor(o);
   initPrint(o);
   updateDetail(o);
@@ -349,7 +416,7 @@ let lastHistoryKey = "";
 async function updateDetail(o) {
   document.getElementById("d-chip").innerHTML = chip(o.state, o.reason);
   document.getElementById("d-sub").textContent =
-    `tag ${o.tag_id} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity}${o.fallback ? " (fallback " + (o.source === "go2rtc" ? o.camera_entity : "go2rtc " + o.go2rtc_stream) + ")" : ""} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
+    `${tagLabel(o)} · ${o.source === "go2rtc" ? "go2rtc " + o.go2rtc_stream : o.camera_entity}${o.fallback ? " (fallback " + (o.source === "go2rtc" ? o.camera_entity : "go2rtc " + o.go2rtc_stream) + ")" : ""} · checked ${ago(o.last_check)} · last seen ${ago(o.last_seen)}`;
   document.getElementById("d-check").disabled = !o.settings.enabled;
   document.getElementById("d-alert").innerHTML = o.alert ? `<div class="notice alert" style="margin:0">
     <b>Tag rejected</b> · ${esc(o.alert.message)}
@@ -586,9 +653,49 @@ function drawChart(pts) {
 window.addEventListener("resize", () => { if (chartPts.length) drawChart(chartPts); });
 
 // ---------- crop editor ---------------------------------------------------
+// One editor, used by the object page and the access scanner page. The page sets
+// editorCtx: { saved() -> [x1,y1,x2,y2], frameUrl(fresh), save(crop) (async), overlay() }.
 let crop = [0, 0, 1, 1];
-const savedCrop = () => { const s = objById(currentId())?.settings || {};
-  return [s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2].map(Number); };
+let editorCtx = null;
+const savedCrop = () => editorCtx ? editorCtx.saved() : [0, 0, 1, 1];
+function objectEditor(id) {
+  return {
+    saved: () => { const s = objById(id)?.settings || {};
+      return [s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2].map(Number); },
+    frameUrl: fresh => `api/objects/${id}/frame.jpg?max_age=${fresh ? 0 : 120}&t=${Date.now()}`,
+    save: async ([x1, y1, x2, y2]) => {
+      await api(`objects/${id}/settings`, { method: "PATCH",
+        body: { crop_x1: x1, crop_y1: y1, crop_x2: x2, crop_y2: y2 } });
+      editorDirty = false;
+      await refresh();
+      checkNow(id, document.getElementById("d-check"));
+    },
+    overlay: () => { const o = objById(id); if (o) drawOverlay(o); },
+  };
+}
+// The crop editor's markup. `extra` adds buttons (e.g. Fit to tag), `legend` legend entries.
+function editorHtml(title, help, extra = "", legend = "") {
+  return `<div class="row"><h3 style="flex:1;margin:0">${title}</h3>
+      <button type="button" onclick="loadFrame(true)">Refresh frame</button>
+      <button type="button" onclick="setCrop([0,0,1,1])">Whole frame</button>
+      ${extra}
+      <button type="button" onclick="setCrop(savedCrop())">Undo</button>
+      <button type="button" class="primary" id="crop-save" onclick="saveCrop()" disabled>Save</button></div>
+    <p class="muted small">Drag the box to move it, drag a corner to resize, or drag on the image to draw a new one.
+      ${help}</p>
+    <div class="editor" id="editor"><div class="loading" id="frame-loading">Fetching a frame…</div>
+      <img id="frame" alt="" style="display:none">
+      <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
+        <path id="dim" fill="rgba(0,0,0,.6)" fill-rule="evenodd" d=""/><g id="marks"></g></svg>
+      <div class="crop" id="crop" style="display:none">
+        <div class="handle h-nw" data-h="nw"></div><div class="handle h-ne" data-h="ne"></div>
+        <div class="handle h-sw" data-h="sw"></div><div class="handle h-se" data-h="se"></div></div>
+    </div>
+    <div class="legend small muted" style="margin-top:8px">
+      <span><i style="background:var(--crop)"></i>${title.toLowerCase()}</span>${legend}
+      <span id="crop-values"></span></div>
+    <div class="error" id="crop-error"></div>`;
+}
 const clamp = v => Math.min(1, Math.max(0, v));
 
 function setCrop(c, fromServer = false) {
@@ -658,15 +765,17 @@ function tagArrow(corners, color, dashed) {
 }
 
 function loadFrame(fresh) {
-  const id = currentId(), img = document.getElementById("frame"), loading = document.getElementById("frame-loading");
-  if (!img) return;
+  const img = document.getElementById("frame"), loading = document.getElementById("frame-loading");
+  if (!img || !editorCtx) return;
+  const ctx = editorCtx;
   loading.style.display = ""; loading.textContent = "Fetching a frame…";
   const next = new Image();
   next.onload = () => { img.src = next.src; img.style.display = ""; loading.style.display = "none";
     document.getElementById("crop").style.display = "";
-    const o = objById(id); if (o) drawOverlay(o); };
+    setCrop(crop, !editorDirty);
+    if (ctx.overlay) ctx.overlay(); };
   next.onerror = () => { loading.textContent = "Could not fetch a frame from the camera. Check the app log."; };
-  next.src = `api/objects/${id}/frame.jpg?max_age=${fresh ? 0 : 120}&t=${Date.now()}`;
+  next.src = ctx.frameUrl(fresh);
 }
 
 function initEditor(o) {
@@ -702,17 +811,23 @@ function initEditor(o) {
 }
 
 async function saveCrop() {
-  const id = currentId(), err = document.getElementById("crop-error"), btn = document.getElementById("crop-save");
+  const err = document.getElementById("crop-error"), btn = document.getElementById("crop-save");
   err.textContent = ""; btn.disabled = true;
   const r = v => Math.round(v * 100) / 100;
-  const [x1, y1, x2, y2] = crop.map(r);
-  try {
-    await api(`objects/${id}/settings`, { method: "PATCH",
-      body: { crop_x1: x1, crop_y1: y1, crop_x2: x2, crop_y2: y2 } });
-    editorDirty = false;
-    await refresh();
-    checkNow(id, document.getElementById("d-check"));
-  } catch (e) { err.textContent = e.message; btn.disabled = false; }
+  try { await editorCtx.save(crop.map(r)); }
+  catch (e) { err.textContent = e.message; btn.disabled = false; }
+}
+
+// ---------- tag families ---------------------------------------------------
+const famOf = o => (o && o.tag_family) || state.default_family || "tag16h5";
+const famInfo = f => (state.families || {})[f] || { ids: 30, cells: 6 };
+// "tag 5", or "tag36h11 5" for a family other than the default
+const tagLabel = o => famOf(o) === (state.default_family || "tag16h5") ? `tag ${o.tag_id}` : `${famOf(o)} ${o.tag_id}`;
+function tagIdControl(family, value) {
+  const n = famInfo(family).ids;
+  return n <= 60
+    ? `<select id="f-tag">${Array.from({ length: n }, (_, i) => `<option ${i === +value ? "selected" : ""}>${i}</option>`).join("")}</select>`
+    : `<input id="f-tag" type="number" min="0" max="${n - 1}" step="1" required value="${Math.min(+value, n - 1)}" style="max-width:140px">`;
 }
 
 // ---------- print tag -----------------------------------------------------
@@ -722,12 +837,13 @@ function initPrint(o) {
     const quiet = document.getElementById("p-quiet").checked ? 1 : 0;
     const size = Math.max(5, Math.min(1000, +document.getElementById("p-size").value || 100));
     document.getElementById("p-size-row").style.display = fmt === "svg" ? "" : "none";
-    const url = fmt === "svg" ? `api/tag/${o.tag_id}.svg?size_mm=${size}&quiet=${quiet}`
-                              : `api/tag/${o.tag_id}.png?quiet=${quiet}`;
+    const fam = `family=${encodeURIComponent(famOf(o))}`, cells = famInfo(famOf(o)).cells;
+    const url = fmt === "svg" ? `api/tag/${o.tag_id}.svg?size_mm=${size}&quiet=${quiet}&${fam}`
+                              : `api/tag/${o.tag_id}.png?quiet=${quiet}&${fam}`;
     document.getElementById("p-download").href = url;
-    document.getElementById("p-preview").src = `api/tag/${o.tag_id}.png?cell=20&quiet=${quiet}&label=0`;
+    document.getElementById("p-preview").src = `api/tag/${o.tag_id}.png?cell=20&quiet=${quiet}&label=0&${fam}`;
     document.getElementById("p-desc").textContent = fmt === "svg"
-      ? `${quiet ? Math.round(size * 8 / 6) : size} mm square overall`
+      ? `${quiet ? Math.round(size * (cells + 2) / cells) : size} mm square overall`
       : "print at the largest size that fits";
   };
   document.querySelectorAll("input[name=p-fmt], #p-quiet, #p-size").forEach(el => el.addEventListener("input", upd));
@@ -750,10 +866,15 @@ async function objectForm(id) {
       <label for="f-id">ID <span class="muted">(optional)</span></label>
       <input id="f-id" pattern="[a-z0-9_]{1,40}" placeholder="made from the name">
       <div class="hint">Lowercase letters, digits and _. Used in entity IDs and cannot be changed later.</div>`}
+      <label for="f-family">Tag family</label>
+      <select id="f-family">${Object.entries(state.families || { tag16h5: { ids: 30 } }).map(([f, i]) =>
+        `<option value="${esc(f)}" ${f === famOf(v) ? "selected" : ""}>${esc(f)} (IDs 0-${i.ids - 1})${f === (state.default_family || "tag16h5") ? ", tested" : ", untested"}</option>`).join("")}</select>
+      <div class="hint">The AprilTag family of the printed tag. Only ${esc(state.default_family || "tag16h5")} is tested on a real camera;
+        the bigger families resist false reads better but need printing about 1.25x larger.</div>
       <label for="f-tag">Tag ID</label>
-      <select id="f-tag">${Array.from({ length: 30 }, (_, i) => `<option ${i === +v.tag_id ? "selected" : ""}>${i}</option>`).join("")}</select>
-      <div class="hint">The tag16h5 ID printed on this object. Objects on the same camera need different IDs.
-        <a href="api/tag/${v.tag_id}.png" target="_blank" id="f-print">Print this tag</a></div>
+      <span id="f-tag-wrap">${tagIdControl(famOf(v), v.tag_id)}</span>
+      <div class="hint">The ID printed on this object. Objects on the same camera need different IDs.
+        <a href="#" target="_blank" id="f-print">Print this tag</a></div>
       <label>Camera source</label>
       <div class="row">
         <label class="inline"><input type="radio" name="src" value="go2rtc" ${v.source === "go2rtc" ? "checked" : ""}> go2rtc stream</label>
@@ -783,8 +904,19 @@ async function objectForm(id) {
   };
   document.querySelectorAll("input[name=src], #f-fallback").forEach(r => r.addEventListener("change", toggle));
   toggle();
-  document.getElementById("f-tag").addEventListener("change", e =>
-    document.getElementById("f-print").href = `api/tag/${e.target.value}.png`);
+  const printLink = () => {
+    const fam = document.getElementById("f-family").value;
+    document.getElementById("f-print").href =
+      `api/tag/${document.getElementById("f-tag").value}.png?family=${encodeURIComponent(fam)}`;
+  };
+  document.getElementById("f-family").addEventListener("change", e => {
+    const cur = document.getElementById("f-tag").value;
+    document.getElementById("f-tag-wrap").innerHTML = tagIdControl(e.target.value, cur);
+    document.getElementById("f-tag").addEventListener("change", printLink);
+    printLink();
+  });
+  document.getElementById("f-tag").addEventListener("change", printLink);
+  printLink();
   api("sources").then(src => {
     document.getElementById("streams").innerHTML = src.go2rtc.map(s => `<option value="${esc(s)}">`).join("");
     document.getElementById("f-stream").placeholder = src.go2rtc.length ? "choose or type a stream" : "type a stream name";
@@ -799,6 +931,7 @@ async function objectForm(id) {
   document.getElementById("f").addEventListener("submit", async e => {
     e.preventDefault();
     const body = { name: document.getElementById("f-name").value.trim(),
+      tag_family: document.getElementById("f-family").value,
       tag_id: +document.getElementById("f-tag").value, source: srcSel(),
       go2rtc_stream: document.getElementById("f-stream").value.trim(),
       camera_entity: document.getElementById("f-entity").value,
@@ -818,9 +951,402 @@ async function objectForm(id) {
   });
 }
 
+// ---------- access: QR scanners ---------------------------------------------
+let access = null;
+const EVENT_TEXT = {
+  verified: "VERIFIED", invalid: "invalid code", not_yet_valid: "code not valid yet", expired: "expired code",
+  replayed: "code already used", revoked: "revoked code", locked_out: "locked out (too many bad codes)",
+  unrecognised: "not a TagSense code", unavailable: "could not verify (failed closed)",
+  scan_timeout: "no valid code before the window ended" };
+function eventDetail(e) {
+  if (e.label) return `${e.label} · ${e.code_type}${e.uses_left !== null && e.uses_left !== undefined ? ` · ${e.uses_left} uses left` : ""}`;
+  if (e.fingerprint) return `fingerprint ${e.fingerprint}`;
+  if (e.locked_until) return `until ${new Date(e.locked_until).toLocaleTimeString()}`;
+  if (e.event_type === "scan_timeout") return `${e.frames} frames${e.fetch_failures ? ", " + e.fetch_failures + " failed" : ""}`;
+  return e.reason || "";
+}
+async function accessPage(isRefresh) {
+  const a = state.access || {};
+  if (!a.enabled) {
+    $main.innerHTML = `<div class="card" style="max-width:640px"><h2>Access</h2>
+      ${a.error ? `<div class="notice alert">The access feature did not start: ${esc(a.error)}</div>` : ""}
+      <p class="muted">Access is turned on with <b>access_enabled</b> and its own MQTT login on the app's Configuration tab. See the Documentation tab.</p></div>`;
+    return;
+  }
+  try { access = await api("access"); } catch (e) { if (!isRefresh) $main.innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+  if (isRefresh && document.getElementById("acc-root")) {
+    const ids = access.scanners.map(sc => sc.id).join(",");
+    if (ids === document.getElementById("acc-root").dataset.ids) {
+      for (const sc of access.scanners) {        // leave each live frame alone
+        const el = document.getElementById("acc-dyn-" + sc.id);
+        if (el) el.innerHTML = scannerDynamic(sc);
+      }
+      return;
+    }
+  }
+  $main.innerHTML = `<div id="acc-root" data-ids="${esc(access.scanners.map(sc => sc.id).join(","))}">
+    <div class="row" style="margin-bottom:12px"><h2 style="flex:1;margin:0">Access</h2>
+      <a class="btn" href="#/access/new">Add scanner</a></div>
+    ${access.mqtt_connected ? "" : `<div class="notice alert">The access MQTT connection is down: check access_mqtt_username / access_mqtt_password and the broker log.</div>`}
+    <div class="notice small">TagSense verifies codes and reports events. It never unlocks anything: your Home Assistant automations decide what a <b>verified</b> event does.</div>
+    <div id="acc-codes"><div class="card"><div class="loading">Loading codes…</div></div></div>
+    <h2 style="margin:20px 0 12px">Scanners</h2>
+    ${access.scanners.length ? access.scanners.map(scannerCard).join("") :
+      `<div class="card"><p class="muted">No scanners yet. Add the doorbell camera as a scanner, then trigger <b>Scan</b> from a doorbell-press automation.</p></div>`}
+  </div>`;
+  loadCodes();
+}
+function scannerCard(sc) {
+  return `<div class="card" id="acc-${esc(sc.id)}" style="margin-bottom:16px">
+    <div id="acc-dyn-${esc(sc.id)}">${scannerDynamic(sc)}</div>
+    <div id="acc-live-${esc(sc.id)}" style="margin-top:12px">${liveOpen.has(sc.id) ? liveBox(sc) : ""}</div>
+  </div>`;
+}
+function scannerDynamic(sc) {
+  const last = sc.events[0];
+  const src = sc.source === "go2rtc" ? "go2rtc " + sc.go2rtc_stream : sc.camera_entity;
+  const crop = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2];
+  return `<div class="row"><h2 style="flex:1">${esc(sc.name)}</h2>
+      ${sc.scanning ? `<span class="chip present">scanning</span>` : `<span class="chip absent">idle</span>`}</div>
+    <div class="muted small">${esc(src)} · capture ${esc(sc.capture)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
+    ${sc.last_stats ? `<div class="hint">Last scan ${ago(sc.last_stats.at)}: ${esc(statsText(sc.last_stats))}</div>` : ""}
+    ${sc.last_error ? `<div class="hint">Last fetch error: ${esc(sc.last_error)}</div>` : ""}
+    ${sc.locked_until ? `<div class="notice alert small" style="margin:8px 0 0">Locked out until ${esc(new Date(sc.locked_until).toLocaleString())} after too many bad codes: scans are ignored.
+      <button class="small" onclick="clearLockout('${sc.id}')">Clear lockout</button></div>` : ""}
+    <div class="row" style="margin-top:8px">
+      <button class="primary" onclick="accessScan('${sc.id}', this)" ${sc.scanning ? "disabled" : ""}>Scan now</button>
+      <button onclick="toggleLive('${sc.id}')">${liveOpen.has(sc.id) ? "Hide live frame" : "Show live frame"}</button>
+      <a class="btn" href="#/access/edit/${sc.id}">Edit</a>
+      ${sc.debug_frames_saved ? `<a class="btn" href="api/access/scanners/${sc.id}/debug.zip">Download ${sc.debug_frames_saved} saved frames</a>` : ""}</div>
+    <div class="cols" style="margin-top:12px">
+      <div>
+        ${sc.has_image ? `<img alt="Last scan (code blacked out)" style="max-width:100%;border-radius:6px"
+           src="api/access/scanners/${sc.id}/last.jpg?t=${encodeURIComponent(last ? last.scanned_at : "")}">
+           <div class="hint">Last scan, cropped, with any code blacked out.</div>` : `<div class="muted small">No scan yet.</div>`}
+      </div>
+      <div><h3>Recent events</h3>
+        ${sc.events.length ? `<table class="small">${sc.events.map(e => `<tr>
+          <td>${ago(e.scanned_at)}</td><td>${e.event_type === "verified" ? `<b>${esc(EVENT_TEXT.verified)}</b>` : esc(EVENT_TEXT[e.event_type] || e.event_type)}
+            <span class="muted">${esc(eventDetail(e))}</span></td></tr>`).join("")}</table>`
+          : `<div class="muted small">None since the app started.</div>`}</div>
+    </div>`;
+}
+function statsText(st) {
+  const parts = [st.capture === "stream" ? "video stream" : st.capture === "snapshot" ? "snapshots" : st.capture];
+  if (st.first_frame_s !== undefined) parts.push(`first frame after ${st.first_frame_s} s`);
+  parts.push(`${st.frames} frame${st.frames === 1 ? "" : "s"} checked` + (st.checked_per_s ? ` (${st.checked_per_s}/s)` : ""));
+  if (st.fetch_ms) parts.push(`${(st.fetch_ms / 1000).toFixed(1)} s per snapshot`);
+  if (st.resolution) parts.push(st.resolution);
+  if (st.stream_error) parts.push(`stream error: ${st.stream_error}`);
+  return parts.join(" · ");
+}
+async function accessScan(id, btn) {
+  btn.disabled = true;
+  const sc = scannerById(id); if (sc) sc.scanning = true;
+  try { await api(`access/scanners/${id}/scan`, { method: "POST" }); } catch (e) { alert(e.message); }
+  setTimeout(refresh, 500);
+}
+
+// ---------- access: passes and static codes (admin) ---------------------------
+let codesData = null, lastIssued = null, confirmData = null, tokenShown = false;
+const fmtWhen = ts => ts ? new Date(ts * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+async function loadCodes() {
+  const box = document.getElementById("acc-codes");
+  if (!box) return;
+  try { codesData = await api("access/codes"); } catch (e) { box.innerHTML = `<div class="card notice alert">${esc(e.message)}</div>`; return; }
+  try { confirmData = await api("access/confirm_setup"); } catch (e) { confirmData = null; }
+  box.innerHTML = passesCard() + staticCard() + confirmCard();
+}
+function passesCard() {
+  const d = codesData, people = d.people;
+  const taken = new Set(people.map(p => p.ha_user_id));
+  const free = d.users.filter(u => !taken.has(u.id));
+  return `<div class="card" style="margin-bottom:16px"><h3>Passes (rotating codes)</h3>
+    <p class="muted small">A pass belongs to one Home Assistant user, who opens it from the TagSense sidebar entry on their phone.
+      The code changes every ${d.period} s. Re-enrol makes every earlier code of that person stop working.</p>
+    ${people.length ? `<table class="small">${people.map(p => `<tr>
+      <td><b>${esc(p.label)}</b> <span class="muted">${esc(p.ha_user_name || "unknown user")}</span></td>
+      <td>${p.enabled ? "enabled" : `<span class="muted">disabled</span>`}</td>
+      <td style="text-align:right">
+        <button class="small" onclick="personEnable('${p.handle}', ${!p.enabled})">${p.enabled ? "Disable" : "Enable"}</button>
+        <button class="small" onclick="personReenrol('${p.handle}')">Re-enrol</button>
+        <button class="small danger" onclick="personDelete('${p.handle}')">Delete</button></td></tr>`).join("")}</table>`
+      : `<div class="muted small">No passes yet.</div>`}
+    ${d.users_error ? `<div class="notice alert small">Could not read Home Assistant's users: ${esc(d.users_error)}</div>` : ""}
+    <div class="row" style="margin-top:10px;align-items:flex-end">
+      <div><label for="pp-label">Label</label><input id="pp-label" maxlength="60" placeholder="Luke" style="max-width:180px"></div>
+      <div><label for="pp-user">Home Assistant user</label><select id="pp-user">${free.map(u => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("")}</select></div>
+      <button onclick="personAdd()" ${free.length ? "" : "disabled"}>Add pass</button></div>
+    <div class="error" id="pp-error"></div></div>`;
+}
+function staticCard() {
+  const d = codesData;
+  const rows = d.static.map(r => `<tr>
+    <td><b>${esc(r.label)}</b><div class="muted">${r.valid_from ? "from " + esc(fmtWhen(r.valid_from)) + " · " : ""}until ${esc(fmtWhen(r.expires))}</div></td>
+    <td>${esc(r.status)}${r.uses_total ? `<div class="muted">${r.uses_left} of ${r.uses_total} uses left</div>` : r.used ? `<div class="muted">used ${r.used}×</div>` : ""}</td>
+    <td style="text-align:right">${["active", "not yet valid"].includes(r.status) && r.current_key ? `
+      <button class="small" onclick="showCode('${r.code_id}')">Show</button>
+      <button class="small danger" onclick="revokeCode('${r.code_id}')">Revoke</button>` : ""}</td></tr>`).join("");
+  return `<div class="card" style="margin-bottom:16px"><h3>Static codes (for visitors)</h3>
+    <p class="muted small">For sending by text, e.g. to a tradesperson. Assume it can be forwarded: give it a start, an expiry and/or a number of uses.
+      With no expiry it still expires after the backstop.</p>
+    <div class="row" style="align-items:flex-end;flex-wrap:wrap">
+      <div><label for="sc-label">Label</label><input id="sc-label" maxlength="60" placeholder="Plumber" style="max-width:180px"></div>
+      <div><label for="sc-from">Valid from <span class="muted">(optional)</span></label><input id="sc-from" type="datetime-local"></div>
+      <div><label for="sc-to">Expires <span class="muted">(optional)</span></label><input id="sc-to" type="datetime-local"></div>
+      <div><label for="sc-uses">Uses <span class="muted">(optional)</span></label><input id="sc-uses" type="number" min="1" max="1000" placeholder="1" style="max-width:90px"></div>
+      <div><label for="sc-backstop">Backstop (days)</label><input id="sc-backstop" type="number" min="1" max="${d.max_days}" value="${d.backstop_days}" style="max-width:90px"></div>
+      <button class="primary" onclick="issueCode()">Issue code</button></div>
+    <div class="error" id="sc-error"></div>
+    <div id="sc-show"></div>
+    ${rows ? `<table class="small" style="margin-top:10px">${rows}</table>` : `<div class="muted small" style="margin-top:8px">No static codes yet.</div>`}
+    <div class="row" style="margin-top:12px">
+      <button class="small danger" onclick="revokeAll()">Revoke all static codes</button>
+      <button class="small danger" onclick="rotateKey()">Rotate signing key</button>
+      <span class="muted small">Key version ${esc(d.key_version)}</span></div></div>`;
+}
+function confirmCard() {
+  if (!confirmData) return "";
+  const d = confirmData, tok = tokenShown ? d.token : "•".repeat(12);
+  const url = `http://${d.hostname}:${d.port}/api/confirm/{{ event_id }}`;
+  const yaml = `# configuration.yaml
+rest_command:
+  tagsense_confirm:
+    url: "${url}"
+    method: POST
+    headers:
+      authorization: !secret tagsense_confirm
+    timeout: 5
+
+# secrets.yaml
+tagsense_confirm: "Bearer ${tok}"`;
+  const auto = `# in the automation, before anything that matters (e.g. unlocking):
+- action: rest_command.tagsense_confirm
+  data:
+    event_id: "{{ trigger.to_state.attributes.event_id }}"
+  response_variable: confirm
+- condition: template
+  value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"`;
+  return `<div class="card" style="margin-bottom:16px"><h3>Confirm events (recommended before unlocking)</h3>
+    <p class="muted small">MQTT cannot stop another app or device on your broker from sending a fake <b>verified</b> event
+      (the Home Assistant Mosquitto app does not enforce ACLs). For anything that matters, have the automation ask TagSense to confirm the event first:
+      TagSense says yes once per event, within ${d.ttl_s} s, and only to Home Assistant with this token.</p>
+    <textarea readonly style="min-height:200px;font-family:monospace">${esc(yaml)}</textarea>
+    <textarea readonly style="min-height:130px;font-family:monospace;margin-top:8px">${esc(auto)}</textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="small" onclick="tokenShown=!tokenShown;loadCodes()">${tokenShown ? "Hide token" : "Show token"}</button>
+      <button class="small" onclick="navigator.clipboard.writeText('Bearer ' + confirmData.token)">Copy token</button>
+      <button class="small danger" onclick="rotateConfirm()">Rotate token</button></div>
+    <div class="hint">Restart Home Assistant (or reload REST commands) after adding the rest_command. Rotating the token means updating secrets.yaml.</div>
+    <div class="row" style="margin-top:10px"><a class="btn primary" target="_blank" rel="noopener"
+      href="https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml">Import the unlock blueprint</a>
+      <span class="muted small">Confirm, unlock, wait for unlocked, lock again after the auto-lock time.</span></div></div>`;
+}
+async function rotateConfirm() {
+  if (!confirm("Rotate the confirm token? Automations stop confirming until secrets.yaml is updated.")) return;
+  codesAction(() => api("access/confirm_setup/rotate", { method: "POST" }));
+}
+function codeMessage(r) {
+  const parts = [];
+  if (r.valid_from) parts.push(`from ${fmtWhen(r.valid_from)}`);
+  parts.push(`until ${fmtWhen(r.expires)}`);
+  const uses = r.uses_total ? (r.uses_total === 1 ? "one use" : `${r.uses_total} uses`) : "any number of uses";
+  return `Here is your access code. Ring the doorbell, then hold this code up to the camera. Valid ${parts.join(" ")}, ${uses}.`;
+}
+function showCode(id) {
+  const r = codesData.static.find(x => x.code_id === id), box = document.getElementById("sc-show");
+  const url = `api/access/static/${id}.png?t=${Date.now()}`;
+  box.innerHTML = `<div class="card" style="margin-top:12px;background:var(--bg)">
+    <div class="cols" style="grid-template-columns:200px minmax(0,1fr);align-items:start">
+      <img src="${url}" alt="Access code for ${esc(r.label)}" style="width:200px;background:#fff;border-radius:6px">
+      <div><b>${esc(r.label)}</b> · ${esc(r.status)}
+        <textarea id="sc-msg" readonly style="margin-top:8px;min-height:80px">${esc(codeMessage(r))}</textarea>
+        <div class="row" style="margin-top:8px"><a class="btn" href="${url}" download="access-code-${esc(r.label.replace(/[^A-Za-z0-9]+/g, "-"))}.png">Download image</a>
+          <button onclick="navigator.clipboard.writeText(document.getElementById('sc-msg').value)">Copy message</button>
+          <button onclick="document.getElementById('sc-show').innerHTML=''">Close</button></div>
+        <div class="hint">Send the image and the message together. Anyone with the image can use it until it expires or is used up.</div></div></div></div>`;
+}
+async function codesAction(fn, errId) {
+  const err = errId && document.getElementById(errId);
+  if (err) err.textContent = "";
+  try { await fn(); await loadCodes(); return true; }
+  catch (e) { if (err) err.textContent = e.message; else alert(e.message); return false; }
+}
+function personAdd() {
+  codesAction(() => api("access/people", { method: "POST", body: {
+    label: document.getElementById("pp-label").value.trim(), ha_user_id: document.getElementById("pp-user").value } }), "pp-error");
+}
+function personEnable(h, on) { codesAction(() => api(`access/people/${h}`, { method: "PATCH", body: { enabled: on } })); }
+function personReenrol(h) {
+  if (confirm("Re-enrol this pass? Every earlier code of this person stops working at once.")) codesAction(() => api(`access/people/${h}/reenrol`, { method: "POST" }));
+}
+function personDelete(h) {
+  if (confirm("Delete this pass?")) codesAction(() => api(`access/people/${h}`, { method: "DELETE" }));
+}
+async function issueCode() {
+  const v = id => document.getElementById(id).value;
+  const ts = id => v(id) ? new Date(v(id)).getTime() / 1000 : null;
+  let issued = null;
+  const ok = await codesAction(async () => {
+    issued = await api("access/static", { method: "POST", body: { label: v("sc-label").trim(),
+      valid_from: ts("sc-from"), expires: ts("sc-to"), uses: v("sc-uses") || null, backstop_days: v("sc-backstop") || null } });
+  }, "sc-error");
+  if (ok && issued) showCode(issued.code_id);
+}
+function revokeCode(id) {
+  if (confirm("Revoke this code? It stops working at once.")) codesAction(() => api(`access/static/${id}/revoke`, { method: "POST" }));
+}
+function revokeAll() {
+  if (confirm("Revoke ALL static codes? They all stop working at once. Passes are not affected.")) codesAction(() => api("access/static/revoke_all", { method: "POST" }));
+}
+function rotateKey() {
+  if (confirm("Rotate the signing key? Every static code issued so far stops working at once. Passes are not affected.")) codesAction(() => api("access/rotate_key", { method: "POST" }));
+}
+async function clearLockout(id) {
+  try { await api(`access/scanners/${id}/clear_lockout`, { method: "POST" }); refresh(); } catch (e) { alert(e.message); }
+}
+
+// Live frame: while a scan runs it reloads every second and shows the frame the
+// scanner just checked (no extra camera fetch). When idle it is one snapshot,
+// refreshed on request, since a snapshot can take seconds on some cameras.
+const liveOpen = new Set(), liveBusy = new Set();
+const scannerById = id => (access && access.scanners.find(s => s.id === id)) || null;
+function liveBox(sc) {
+  const [x1, y1, x2, y2] = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2].map(v => +v * 100);
+  return `<div style="position:relative">
+      <img id="live-img-${esc(sc.id)}" alt="Live frame" style="width:100%;border-radius:6px;display:block;min-height:60px;background:#000">
+      <div style="position:absolute;left:${x1}%;top:${y1}%;width:${x2 - x1}%;height:${y2 - y1}%;border:2px solid #2ecc71;box-sizing:border-box;pointer-events:none"></div></div>
+    <div class="row hint" style="margin-top:4px"><span id="live-note-${esc(sc.id)}" style="flex:1">Fetching a frame…</span>
+      <button type="button" class="small" onclick="loadLive('${sc.id}')">Refresh</button></div>`;
+}
+function toggleLive(id) {
+  const box = document.getElementById("acc-live-" + id), sc = scannerById(id);
+  if (!box || !sc) return;
+  if (liveOpen.has(id)) { liveOpen.delete(id); box.innerHTML = ""; }
+  else { liveOpen.add(id); box.innerHTML = liveBox(sc); loadLive(id); }
+  document.getElementById("acc-dyn-" + id).innerHTML = scannerDynamic(sc);
+}
+function loadLive(id) {
+  const img = document.getElementById("live-img-" + id), note = document.getElementById("live-note-" + id);
+  if (!img || liveBusy.has(id)) return;
+  liveBusy.add(id);
+  const next = new Image(), t0 = Date.now();
+  next.onload = () => {
+    liveBusy.delete(id);
+    img.src = next.src;
+    const sc = scannerById(id);
+    if (note) note.textContent = (sc && sc.scanning ? "Live while scanning: the frame just checked" : "Snapshot")
+      + ` · ${new Date().toLocaleTimeString()} · took ${((Date.now() - t0) / 1000).toFixed(1)} s · scan area in green, any readable code blacked out`;
+  };
+  next.onerror = () => { liveBusy.delete(id); if (note) note.textContent = "Could not fetch a frame from the camera."; };
+  next.src = `api/access/scanners/${id}/frame.jpg?t=${Date.now()}`;
+}
+setInterval(() => {
+  if (!location.hash.startsWith("#/access") || location.hash.startsWith("#/access/")) return;
+  for (const id of liveOpen) { const sc = scannerById(id); if (sc && sc.scanning) loadLive(id); }
+}, 1000);
+async function scannerForm(id) {
+  if (!access) { try { access = await api("access"); } catch (e) { location.hash = "#/access"; return; } }
+  const o = id ? access.scanners.find(s => s.id === id) : null;
+  const v = o || { name: "", source: "go2rtc", go2rtc_stream: "", camera_entity: "", fallback: false,
+    crop_x1: 0, crop_y1: 0, crop_x2: 1, crop_y2: 1, window_s: 20, frame_interval_s: 0.3, debug_frames: false,
+    capture: "" };
+  const num = (k, label, min, max, step) => `<div><label for="sf-${k}">${label}</label>
+    <input id="sf-${k}" type="number" min="${min}" max="${max}" step="${step}" value="${v[k]}" style="max-width:110px"></div>`;
+  $main.innerHTML = `<div class="${o ? "cols" : ""}"><div class="card" style="max-width:600px">
+    <h2>${o ? "Edit " + esc(o.name) : "Add scanner"}</h2>
+    <form id="sf" autocomplete="off">
+      <label for="sf-name">Name</label>
+      <input id="sf-name" required maxlength="60" value="${esc(v.name)}" placeholder="Front door">
+      ${o ? `<div class="hint">ID: <b>${esc(o.id)}</b></div>` : `<label for="sf-id">ID <span class="muted">(optional)</span></label>
+        <input id="sf-id" pattern="[a-z0-9_]{1,40}" placeholder="made from the name">`}
+      <label>Camera source</label>
+      <div class="row">
+        <label class="inline"><input type="radio" name="sf-src" value="go2rtc" ${v.source === "go2rtc" ? "checked" : ""}> go2rtc stream</label>
+        <label class="inline"><input type="radio" name="sf-src" value="ha_camera" ${v.source === "ha_camera" ? "checked" : ""}> Home Assistant camera</label></div>
+      <label for="sf-stream">go2rtc stream</label>
+      <input id="sf-stream" list="sf-streams" value="${esc(v.go2rtc_stream)}"><datalist id="sf-streams"></datalist>
+      <label for="sf-entity">Home Assistant camera</label>
+      <input id="sf-entity" list="sf-entities" value="${esc(v.camera_entity)}" placeholder="camera.doorbell"><datalist id="sf-entities"></datalist>
+      <label class="inline"><input type="checkbox" id="sf-fallback" ${v.fallback ? "checked" : ""}> If this camera fails, try the other source</label>
+      ${o ? "" : `<div class="hint" style="margin-top:10px">After adding the scanner you can draw its scan area on a live frame.</div>`}
+      <label for="sf-capture">Frame capture</label>
+      <select id="sf-capture">
+        ${o ? "" : `<option value="" selected>Best available (auto if both sources are set)</option>`}
+        <option value="auto" ${v.capture === "auto" ? "selected" : ""}>Auto: snapshots from the Home Assistant camera until the go2rtc stream runs (needs both)</option>
+        <option value="stream" ${v.capture === "stream" ? "selected" : ""}>Video stream (go2rtc)</option>
+        <option value="snapshot" ${v.capture === "snapshot" ? "selected" : ""}>Single snapshots</option></select>
+      <div class="hint">Video stream holds the go2rtc stream open during a scan: one start-up delay, then several frames a second.
+        Single snapshots fetch one image at a time, which can take seconds each on some cameras. Home Assistant cameras always use snapshots.</div>
+      <div class="row">${num("window_s", "Scan window (s)", 5, 120, 1)}${num("frame_interval_s", "Pause between snapshots (s)", 0, 5, 0.1)}</div>
+      <label class="inline"><input type="checkbox" id="sf-debug" ${v.debug_frames ? "checked" : ""}> Keep raw scan frames for testing (last 50, deleted after 24 h)</label>
+      <div class="hint">Raw frames can contain readable codes: leave this off except while testing.</div>
+      <div id="sf-error" class="notice alert" style="white-space:pre-wrap;display:none;margin-top:10px"></div>
+      <div class="row" style="margin-top:14px"><button class="primary" type="submit">${o ? "Save" : "Add"}</button>
+        <a class="btn" href="#/access">Cancel</a>
+        ${o ? `<span class="spacer"></span><button type="button" class="danger" onclick="deleteScanner('${o.id}')">Delete</button>` : ""}</div>
+    </form></div>
+    ${o ? `<div class="card" style="order:-1">${editorHtml("Scan area",
+      "Cover where a visitor holds up a phone. A tighter area is faster; a code must be about 100 px across in the full frame to read. Any readable code in the frame is blacked out here.")}</div>` : ""}
+    </div>`;
+  if (o) {
+    editorCtx = scannerEditor(o.id);
+    editorDirty = false;
+    setCrop(savedCrop(), true);
+    initEditor(o);
+    loadFrame(true);
+  }
+  api("sources").then(src => {
+    document.getElementById("sf-streams").innerHTML = src.go2rtc.map(s => `<option value="${esc(s)}">`).join("");
+    document.getElementById("sf-entities").innerHTML = src.ha_cameras.map(c => `<option value="${esc(c.entity_id)}">${esc(c.name)}</option>`).join("");
+  }).catch(() => {});
+  document.getElementById("sf").addEventListener("submit", async e => {
+    e.preventDefault();
+    const val = k => document.getElementById("sf-" + k).value;
+    const body = { name: val("name").trim(), source: document.querySelector("input[name=sf-src]:checked").value,
+      go2rtc_stream: val("stream").trim(), camera_entity: val("entity").trim(),
+      fallback: document.getElementById("sf-fallback").checked, debug_frames: document.getElementById("sf-debug").checked,
+      capture: val("capture") };
+    for (const k of ["window_s", "frame_interval_s"]) body[k] = +val(k);
+    if (!o) body.id = val("id").trim();
+    try {
+      const r = await (o ? api(`access/scanners/${o.id}`, { method: "PUT", body }) : api("access/scanners", { method: "POST", body }));
+      access = null; location.hash = o ? "#/access" : `#/access/edit/${r.id}`;
+    } catch (err) {
+      const box = document.getElementById("sf-error"); box.textContent = err.message; box.style.display = "";
+    }
+  });
+}
+function scannerEditor(id) {
+  const cur = () => (access && access.scanners.find(s => s.id === id)) || {};
+  return {
+    saved: () => { const s = cur(); return [s.crop_x1, s.crop_y1, s.crop_x2, s.crop_y2].map(Number); },
+    frameUrl: () => `api/access/scanners/${id}/frame.jpg?t=${Date.now()}`,
+    save: async ([x1, y1, x2, y2]) => {
+      await api(`access/scanners/${id}`, { method: "PUT", body: { crop_x1: x1, crop_y1: y1, crop_x2: x2, crop_y2: y2 } });
+      editorDirty = false;
+      access = await api("access");
+      setCrop(savedCrop(), true);
+    },
+  };
+}
+async function deleteScanner(id) {
+  if (!confirm("Delete this scanner and its Home Assistant entities?")) return;
+  try { await api(`access/scanners/${id}`, { method: "DELETE" }); access = null; location.hash = "#/access"; }
+  catch (e) { alert(e.message); }
+}
+
 (async () => {
+  const w = await showWhoami();
+  if (!w || !w.admin) {                 // non-admins (or unknown): their pass, nothing else
+    document.querySelectorAll("header .btn").forEach(b => b.style.display = "none");
+    window.removeEventListener("hashchange", route);
+    return passPage(w);
+  }
+  document.getElementById("pass-link").style.display = "";
   try { state = await api("state"); } catch (e) { $main.innerHTML = `<div class="loading">Could not reach TagSense: ${esc(e.message)}</div>`; }
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
+  showAccessLink();
   render(false);
   schedule();
 })();

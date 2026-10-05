@@ -16,6 +16,7 @@ from .objects import (ConfigError, ObjectConfig, ObjectStore, remove_object_dir,
 from .scheduler import STARTUP
 from .sources import build_source
 from .tracker import TrackedObject, Tuning
+from .users import UserDirectory
 
 log = logging.getLogger("tagsense")
 
@@ -36,6 +37,7 @@ DEFAULT_OPTIONS = {
     "sanity_min_ratio": 0.5,
     "sanity_min_h": 0.02,
     "log_level": "info",
+    "access_enabled": False,
 }
 
 
@@ -57,7 +59,7 @@ def make_source(oc: ObjectConfig, opts: dict):
 
 class App:
     def __init__(self, opts: dict, mqtt=None, source_factory=make_source, data_dir: str = DATA_DIR,
-                 notifier: Notifier | None = None):
+                 notifier: Notifier | None = None, access_mqtt=None, access_source_factory=None):
         self.opts = opts
         self.notifier = notifier or Notifier()
         self.data_dir = data_dir
@@ -85,6 +87,23 @@ class App:
         self.objects: dict[str, TrackedObject] = {}
         self.gen_stop = threading.Event()
         self._build(self.configs)
+        self.users = UserDirectory()     # who is using the panel (ingress header + HA user list)
+        self.access = None              # app.access.manager.AccessManager, when enabled
+        self.access_error: str | None = None
+        if opts.get("access_enabled"):
+            self._init_access(access_mqtt, access_source_factory)
+
+    def _init_access(self, mqtt, source_factory):
+        """Only here is the access module imported. If it cannot start, it stays
+        off (fail closed) and the bin sensor carries on."""
+        from .access.manager import AccessError, AccessManager, make_source as access_source
+        try:
+            kw = {"snapshot_factory": lambda c, o: None} if source_factory else {}
+            self.access = AccessManager(self.opts, self.data_dir, VERSION, mqtt=mqtt,
+                                        source_factory=source_factory or access_source, **kw)
+        except (AccessError, ConfigError, ValueError, OSError) as e:
+            self.access_error = str(e)
+            log.error("access: not started: %s", e)
 
     # --- building and live reload -----------------------------------------
 
@@ -111,9 +130,11 @@ class App:
             objects[oc.id] = obj
         for cam in cameras.values():
             for o in cam.objects:
-                o.known_ids = {p.oc.tag_id for p in cam.objects if p is not o}
+                o.known_ids = {p.oc.tag_id for p in cam.objects
+                               if p is not o and p.oc.tag_family == o.oc.tag_family}
             log.info("camera %s: %s", cam.name,
-                     ", ".join(f"{o.oc.name} (tag {o.oc.tag_id})" for o in cam.objects))
+                     ", ".join(f"{o.oc.name} ({o.oc.tag_family} {o.oc.tag_id})"
+                               for o in cam.objects))
         if not configs:
             log.info("no objects configured yet: add one in the TagSense panel")
         self.cameras, self.objects = cameras, objects
@@ -197,7 +218,11 @@ class App:
             start_web(self, WEB_PORT)
         self.mqtt.start()
         self._start_workers()
+        if self.access:
+            self.access.start()
         self.stop_event.wait()
+        if self.access:
+            self.access.stop()
         with self.reload_lock:
             self._stop_workers()
         self.mqtt.stop()

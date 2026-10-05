@@ -1,7 +1,7 @@
 # TagSense
 
 TagSense detects whether a tagged object (a wheelie bin, a car, a chair, ...)
-is in place from a printed AprilTag (family **tag16h5**) stuck on it. It grabs camera frames, checks
+is in place from a printed AprilTag (family **tag16h5** by default) stuck on it. It grabs camera frames, checks
 them, and publishes **present / absent / unknown** to Home Assistant via MQTT
 discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 
@@ -36,7 +36,7 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
 ### Objects
 
 Objects are managed in the **TagSense panel** in the sidebar: click **Add
-object**, give it a name, the tag ID printed on it, and the camera that sees
+object**, give it a name, the tag family and ID printed on it, and the camera that sees
 it (a go2rtc stream or a Home Assistant camera). Then draw its search area on
 the live frame. Changes apply straight away.
 
@@ -189,8 +189,281 @@ object, on the opposite side.
 
 State and settings are stored in `/data` and survive restarts.
 
+## Tag families
+
+The detector settings were tuned on real frames for **tag16h5 only**. The
+other families use the same settings and are **untested on a real camera**.
+They have passed synthetic tests only (see `SPEC.md` in the repository).
+
+- **Smaller grid (tag16h5, 4x4 data cells):** big cells, so it decodes at the
+  smallest size and with the most blur. The cost is a low Hamming distance:
+  random texture (gravel, foliage) decodes as a valid tag more often. The
+  ID filter and shape gate are there because of this.
+- **Bigger grids (tag25h9 5x5, tag36h10/36h11 6x6):** much more resistant to
+  phantoms, but each cell is smaller at the same printed size. Print them
+  bigger: in the synthetic tests, the 6x6 families needed about 1.25x the tag
+  size of tag16h5 to decode as reliably when blurred.
+- tag36h11 is the usual choice in robotics. tag36h10 has more IDs, but less
+  error resistance.
+
+The family is chosen **per object**, in the panel's object form, next to the
+tag ID. The default is tag16h5. The tag ID list follows the family (IDs
+0-29 for tag16h5, 0-34 for tag25h9, 0-2319 for tag36h10, 0-586 for tag36h11),
+and *Print tag* prints in the object's family. Objects with different
+families can share a camera, even with the same ID. If you switch an
+existing object to a new tag, press *Reset learned position* once the new
+tag is in place.
+
+## Access codes at the door (off by default)
+
+A visitor rings the doorbell and holds up a code on their phone. TagSense
+checks it and reports a **verified** event (or why not) to Home Assistant.
+**TagSense never unlocks anything.** It holds no lock credentials and has no
+path to a lock. Your automations decide what a verified event does.
+
+There are two kinds of code:
+
+- **Passes** (rotating): for people who come and go, such as family. Each
+  pass belongs to one Home Assistant user, who opens it from the TagSense
+  entry in the HA sidebar or app. The code changes every 30 s, and each code
+  works once.
+- **Static codes**: for sending to someone, such as a tradesperson, by text.
+  Give it an optional start time, plus an expiry and/or a number of uses (at
+  least one). A code with no expiry still expires after a backstop (90 days by
+  default, at most a year). Assume a static code can be forwarded.
+
+### Turning it on
+
+Access needs **its own MQTT login**, kept separate from the login shared by
+every app, so its traffic is clearly its own. A login cannot stop *other*
+clients on the broker from publishing a fake event, though: see *Confirming
+events* below for that.
+
+1. In the **Mosquitto broker** app (not the MQTT integration), add a login
+   under *Logins*, for example `tagsense_access` with a long random password.
+   **Use this login for TagSense access only.** Never give it to another app,
+   integration or device (ESPHome, zigbee2mqtt, Node-RED, a phone app...), and
+   never reuse its password. Anything that can log in as this user can fake an
+   access event.
+2. On TagSense's **Configuration** tab, set `access_enabled` to on, and set
+   `access_mqtt_username` and `access_mqtt_password` to the new login. Then
+   restart TagSense.
+
+If the login is missing, or is the same as the shared app login, access stays
+off and the panel's **Access** page says why. The bin sensor is unaffected
+either way.
+
+### Who sees what in the panel
+
+Every Home Assistant user sees the TagSense entry in the sidebar.
+**Admins** get the whole panel. **Everyone else gets only "My pass"**: their
+own pass, if an admin has given them one. TagSense asks Home Assistant who is
+an admin. If it cannot tell, for example because Home Assistant is
+restarting, nobody counts as an admin until it can.
+
+### Scanners
+
+Open **Access** in the panel and add a **scanner**: the doorbell camera (a
+go2rtc stream, an HA camera, or both), the area of the frame where a visitor
+holds up their phone, and how long a scan lasts (default 20 s). After adding
+it, its page has the same scan-area editor as an object: drag a box on a live
+frame (any readable code in the frame is blacked out there). Each scanner is a
+device, **TagSense Access `<name>`**, with these entities:
+
+- **Scan** (button): starts a scan window. Scanning only happens in these
+  windows, never continuously.
+- **Code** (event): what happened, see the table below. Events are never
+  retained.
+- **Scanning** (binary sensor): on while a window is open.
+- **Last scan** (image): the scan area, with every code blacked out.
+
+A doorbell press starts the scan:
+
+```yaml
+automation:
+  - alias: "Doorbell: scan for an access code"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.doorbell_doorbell   # your doorbell's press sensor
+        to: "on"
+    actions:
+      - action: button.press
+        target:
+          entity_id: button.tagsense_access_front_door_scan
+```
+
+A window ends at the first verified code, or after the window time.
+
+### Events
+
+| `event_type` | Meaning | Attributes |
+|---|---|---|
+| `verified` | A valid code. The only one to act on. | `label`, `code_type` (`rotating`/`static`), `code_id`, `expires`, `uses_left`, `scanned_at`, `scanner` |
+| `invalid` | Looks like a TagSense code but does not check out (forged, mistyped, from a deleted pass or an old key). | `fingerprint` only |
+| `not_yet_valid` | A genuine static code before its start time. | as `verified`, plus `valid_from` |
+| `expired` | A genuine code after its expiry. | as `verified` |
+| `replayed` | A genuine code that was already used (a pass code shown twice, or a static code with no uses left). | as `verified` |
+| `revoked` | A genuine static code that was revoked or deleted. | `code_id`, `label` |
+| `locked_out` | Too many bad codes: the scanner ignores scans for 15 minutes. | `locked_until` |
+| `unrecognised` | A QR code that is not a TagSense code (a parcel label...). | `fingerprint` only |
+| `unavailable` | TagSense could not check (it fails closed). | `reason` |
+| `scan_timeout` | No valid code before the window ended. | frame counts and timing |
+
+Bad codes (`invalid`, `expired`, `replayed`, `revoked`) count towards a
+**lockout**: more than 3 in one window, or more than 5 in 10 minutes, locks
+the scanner for 15 minutes. The lockout survives restarts and is cleared only
+in the panel. Someone could set it off on purpose; that keeps the door shut,
+it never opens it. A code's text never appears in events, logs or images:
+codes that are not verified are shown only as a short fingerprint.
+
+**Acting on `verified`:** an event entity's state is the time of its last
+event, and it is restored when TagSense or Home Assistant restarts. Write the
+automation so a restart cannot look like a new event: ignore changes from
+`unavailable`/`unknown`, and check the event is recent. For example, a
+notification:
+
+```yaml
+automation:
+  - alias: "Front door: code verified"
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: event.tagsense_access_front_door_code
+        not_from: ["unavailable", "unknown"]
+    conditions:
+      - condition: state
+        entity_id: event.tagsense_access_front_door_code
+        attribute: event_type
+        state: verified
+      - condition: template
+        value_template: >-
+          {{ (now() - as_datetime(trigger.to_state.state)).total_seconds() < 30 }}
+    actions:
+      - action: notify.notify
+        data:
+          message: >-
+            {{ trigger.to_state.attributes.label }} verified at the front door
+            ({{ trigger.to_state.attributes.code_type }} code)
+```
+
+What you do on `verified` (a notification, turning on a light, or, if you
+decide to, unlocking) is up to you. **Before unlocking, confirm the event**
+(see *Confirming events* below): anything on your MQTT broker could publish a
+fake one. Notify on `invalid` and `locked_out` too,
+so you hear about attempts.
+
+### Passes and static codes (panel, admins)
+
+- **Passes:** add a pass with a label and the Home Assistant user who will
+  carry it. That user opens TagSense in the sidebar (or the HA app) to show
+  it. *Disable* stops it working; *Re-enrol* gives it a new secret, so every
+  earlier code stops working (use it if a phone is lost); *Delete* removes it.
+- **Static codes:** *Issue code* with a label, an optional start, and an
+  expiry and/or a number of uses. The code is shown as a picture with a
+  ready-to-send message; *Download image*, then send both. *Show* displays it
+  again while it is valid; *Revoke* stops it at once; *Revoke all static
+  codes* stops every one; *Rotate signing key* invalidates every static code
+  issued so far (passes are not affected).
+
+### Frame capture and reading distance
+
+- **Auto** (the default when a scanner has both a go2rtc stream and an HA
+  camera): snapshots from the HA camera straight away, then the go2rtc video
+  stream once it is running. On the development camera the HA camera gave a
+  first full-resolution frame in 0.8 s; the stream took about 6 s to start,
+  then gave several frames a second.
+- **Video stream** (go2rtc): holds the stream open for the window. Requesting
+  single JPEGs from go2rtc instead can take several seconds each.
+- **Snapshots:** single images, the only choice for an HA camera on its own.
+
+A scan falls back to snapshots if the stream fails, and the scanner card
+shows the timing of the last scan. A code has to be about 100 px across in the
+frame (4-5 px per QR module). TagSense's codes are deliberately small (QR
+version 2), and the ZXing decoder copes with an over-bright phone screen. Ask
+visitors to use medium-high screen brightness (maximum can make it worse) and
+to tilt the phone away from lights. Use the highest-resolution stream the
+camera offers; a low-resolution stream (for example 896x672) still reads a
+code held close. *Keep raw scan frames* (per scanner, off by default) saves up
+to 50 frames for 24 h for checking; TagSense codes in them are blacked out.
+
+### What this does and does not protect against
+
+- **Forged or altered codes:** every code is signed (HMAC-SHA256, 80-bit
+  tag); a changed character fails.
+- **Replayed codes** (a code filmed or photographed, or a doorbell recording):
+  each pass code works once and only for about a minute; static codes have
+  limited uses and an expiry.
+- **Forwarded static codes:** cannot be prevented, which is why they expire
+  and can be limited to one use and revoked.
+- **Someone at the door with your phone unlocked:** not something a code can
+  tell apart.
+- **Fake events:** anything that can log in to your MQTT broker (every app
+  given the MQTT service, Zigbee2MQTT, Frigate, devices with an MQTT
+  password) can publish a fake `verified` event. Fine for notifications; for
+  a lock, confirm each event first (below).
+
+### Confirming events (recommended before unlocking anything)
+
+The MQTT broker cannot limit who publishes to TagSense's topics. The Home
+Assistant Mosquitto app treats every logged-in user as a superuser, so a
+Mosquitto ACL file has no effect. This was tested on 2026-10-05 with Home
+Assistant's own login, an HA-user login and a broker-only login: a fake
+`verified` event got through with each. So:
+
+- **Simple:** act on `verified` events directly. Fine for a notification or
+  a light.
+- **Secure:** for a lock or anything else that matters, have the automation
+  ask TagSense to confirm the event first. Every `verified` event carries a
+  one-time `event_id`. TagSense confirms it **once**, **within 30 s**, and
+  only to a request from Home Assistant carrying a secret token. A faked
+  MQTT message cannot produce an ID TagSense will confirm.
+
+The **Access** page has a *Confirm events* card with the token and the exact
+YAML for your install, for example:
+
+```yaml
+# configuration.yaml
+rest_command:
+  tagsense_confirm:
+    url: "http://<tagsense-hostname>:8099/api/confirm/{{ event_id }}"
+    method: POST
+    headers:
+      authorization: !secret tagsense_confirm
+    timeout: 5
+
+# secrets.yaml
+tagsense_confirm: "Bearer <token from the Access page>"
+```
+
+Then, in the automation, before the action that matters:
+
+```yaml
+      - action: rest_command.tagsense_confirm
+        data:
+          event_id: "{{ trigger.to_state.attributes.event_id }}"
+        response_variable: confirm
+      - condition: template
+        value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"
+      - action: lock.unlock
+        target:
+          entity_id: lock.front_door
+```
+
+**Or use the blueprint**, which does all of this for a lock: it confirms
+the event, unlocks, waits until the lock reports unlocked, waits the auto-lock
+time (fixed, or read from the lock's own auto-lock setting), and locks again
+if the lock is still unlocked. It still needs the `rest_command` above.
+
+[![Import the TagSense unlock blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml)
+
+If TagSense is restarted, unreachable, or the token is wrong, nothing is
+confirmed, so the lock stays shut. *Rotate token* on the Access page replaces
+the token; update `secrets.yaml` afterwards. Only requests from Home
+Assistant's own address reach the confirm step at all, and the token stops
+anything else that shares that address (apps on the host network).
+
 ## Tag and print notes
 
-- Use tag16h5, with a white quiet zone about as wide as the black border.
-  A matte finish is best.
+- Use the object's family (tag16h5 by default), with a white quiet zone
+  about as wide as the black border. A matte finish is best.
 - A larger print is the main way to gain decode margin at oblique angles.

@@ -2,6 +2,75 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.0
+
+**Upgrading:** nothing changes for your objects unless you opt in. Existing
+objects stay on tag16h5, and access codes are off by default. One visible
+change: the TagSense sidebar entry now shows for **every** Home Assistant
+user, but non-admins only see their own door pass (or "Nothing here for you").
+
+### For everyone
+
+- **Tag family per object.** The object form has a *Tag family* choice:
+  `tag16h5` (the default), `tag25h9`, `tag36h10` or `tag36h11`. The tag ID
+  list, *Print tag* and export/import follow it, and objects with different
+  families can share a camera.
+  - Only tag16h5 is tuned and tested on real frames; the others are tested on
+    synthetic frames only.
+  - The trade-off: bigger grids resist phantoms far better (on 2000 random
+    textures: tag16h5 40 false decodes, tag25h9 1, the 36-bit families none),
+    but need about 1.25x the printed size.
+- **Export/import carries history:** each object's last 24 hours of chart
+  history and its learned position. Importing merges history without
+  doubling, and takes the learned position only if it is newer, so moving
+  between installs and back is safe. With access codes on, the scanners'
+  settings are included too, but never keys, passes or codes.
+- **Export/import on a new install:** the card shows even before any object
+  exists.
+- **`go2rtc_url` without `http://`** now works.
+- **Configuration tab:** every option now has a readable name and a
+  description.
+
+### Access codes at the door (optional, off by default)
+
+A visitor rings and holds up a code on their phone. TagSense verifies it and
+reports an event to Home Assistant; it **never unlocks anything** itself.
+
+- **Passes:** rotating codes, every 30 s, each code works once. They belong to
+  Home Assistant users, who open them on the new *My pass* page, with an
+  optional white-on-black mode for screens that glare on camera.
+- **Static codes** for visitors: an optional start time, an expiry and/or a
+  number of uses, a backstop expiry, and revoking. Shown as a picture with a
+  ready-to-send message.
+- **Verification:** signed codes (HMAC-SHA256), checked in one place that
+  fails closed, with replay protection and a lockout after repeated bad codes.
+- **Confirm before acting:** each `verified` event carries a one-time
+  `event_id`. An automation can confirm it with TagSense, once and within
+  30 s, through a `rest_command` with a token, before unlocking. This is
+  needed because the Home Assistant Mosquitto app does not enforce ACLs, so
+  any MQTT client could publish a fake event. That was tested, as was the
+  confirm step refusing a fake.
+- **Blueprint "unlock on a confirmed code":** it confirms, unlocks, waits
+  until the lock reports unlocked, then locks again after the auto-lock time,
+  with optional extra actions that cannot block the relock. One-click import.
+- **Scanners** (e.g. the doorbell) are set up in the panel: camera, scan area
+  (drag to set), scan window and capture mode.
+  - **Auto capture:** snapshots from the HA camera until the go2rtc stream
+    runs. go2rtc is read as a video stream, not one JPEG at a time.
+  - **Decoding** uses ZXing (new dependency `zxing-cpp`), which reads phone
+    screens that OpenCV could not.
+  - Codes are blacked out in every image.
+- **Who can do what:** admin status comes from Home Assistant (new dependency
+  `websocket-client`). If it cannot be checked, nobody counts as an admin.
+- **Setting up:** access needs its own MQTT login
+  (`access_mqtt_username`/`access_mqtt_password`). The bin sensor does not
+  load any of it while it is off. See the Documentation tab.
+
+### Development
+
+- New `SPEC.md`: the design, the tuning evidence and the threat model.
+- New `app/sweep.py`: tag-family and QR measurements.
+
 ## 0.4.3
 
 - **Rotation sensor** (requested on Reddit: the bin men turn the bin round).

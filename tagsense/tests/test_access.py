@@ -1,0 +1,742 @@
+"""Access scanning: QR reading on a scanner, verified events, kept apart from the bin."""
+import base64
+import json
+import logging
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+from app.access import codes
+from app.access.config import ScannerConfig, ScannerStore, parse_scanner
+from app.access.manager import AccessError, AccessManager, access_mqtt_config
+from app.access.mqtt import AVAILABILITY, AccessMqtt
+from app.access.qr import QrDecoder, blackout, fingerprint
+from app.access.scanner import DEBUG_MAX_FILES, Scanner
+from app.access.store import AccessStore, StaticRecord
+from app.access.verifier import Verifier
+from app.main import App, DEFAULT_OPTIONS
+from app.objects import ConfigError
+from app.sources import FetchError, Frame
+from app.web import Api, ApiError
+
+from test_web import FakeMqtt, fake_source
+
+# A real signed static code: a fixed key and a record seeded into each test's store.
+KEY = b"k" * 32
+EXPIRY = codes.minutes(1893456000)        # 2030-01-01
+PAYLOAD = codes.static_code(KEY, "A", "TESTCODE", EXPIRY)
+FOREIGN = "TAGSENSE-TEST"                 # a QR code that is not ours
+
+
+def seed_codes(access_dir) -> AccessStore:
+    store = AccessStore(os.path.join(str(access_dir), "codes"))
+    with open(os.path.join(store.dir, "keys.json"), "w") as f:
+        json.dump({"static": {"v": "A", "key": base64.b64encode(KEY).decode()}}, f)
+    store.save_static([StaticRecord("TESTCODE", "Plumber", "A", EXPIRY)])
+    return store
+
+
+def qr_frame(payload=PAYLOAD, module_px=5.0, at=(700, 300), seed=0, size=(1280, 720)):
+    """Noisy frame with a QR code (with its quiet zone), slightly skewed."""
+    rng = np.random.default_rng(seed)
+    w, h = size
+    frame = rng.normal(110, 20, (h, w, 3)).clip(0, 255).astype(np.uint8)
+    if payload is None:
+        return frame
+    q = cv2.QRCodeEncoder.create().encode(payload)
+    side = int(q.shape[0] * module_px)
+    img = cv2.cvtColor(cv2.resize(q, (side, side), interpolation=cv2.INTER_AREA),
+                       cv2.COLOR_GRAY2BGR)
+    x, y = at
+    src = np.float32([[0, 0], [side, 0], [side, side], [0, side]])
+    dst = np.float32([[x, y], [x + side, y + side * 0.05], [x + side * 0.97, y + side],
+                      [x, y + side * 0.96]])
+    H = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(img, H, (w, h))
+    mask = cv2.warpPerspective(np.full((side, side), 255, np.uint8), H, (w, h))
+    frame[mask > 0] = warped[mask > 0]
+    return frame
+
+
+def jpeg(img) -> bytes:
+    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tobytes()
+
+
+class FakePaho:
+    """Stands in for paho's client so the real AccessMqtt publishing code runs."""
+
+    def __init__(self):
+        self.published = []         # (topic, payload, retain)
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload, retain))
+
+        class R:
+            def wait_for_publish(self, t=None):
+                pass
+        return R()
+
+    def disconnect(self):
+        pass
+
+    def loop_stop(self):
+        pass
+
+    def all_bytes(self) -> bytes:
+        return b"".join(p if isinstance(p, bytes) else str(p).encode()
+                        for t, p, _ in self.published) + \
+            "".join(t for t, _, _ in self.published).encode()
+
+
+def access_mqtt():
+    m = AccessMqtt(None, "test", on_scan=lambda sid: None, on_connected=lambda: None,
+                   client=FakePaho())
+    m.start = lambda: None
+    m.connected = True
+    return m
+
+
+class SeqSource:
+    name = "fake"
+
+    def __init__(self, frames):
+        self.frames, self.i = [jpeg(f) for f in frames], 0
+
+    def fetch(self, timeout=None):
+        data = self.frames[min(self.i, len(self.frames) - 1)]
+        self.i += 1
+        return Frame(data, "fake", 1.0)
+
+
+def scanner(tmp_path, frames, **cfg):
+    c = ScannerConfig("door", "Door", "go2rtc", "doorbell", **({"window_s": 2.0,
+                                                               "frame_interval_s": 0.0} | cfg))
+    m = access_mqtt()
+    s = Scanner(c, SeqSource(frames), m, str(tmp_path), threading.Event(),
+                verifier=Verifier(seed_codes(tmp_path)))
+    return s, m
+
+
+def wait_for(cond, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def done(s, m):
+    """The window has closed and its event is out."""
+    return lambda: events(m) and not s.scanning
+
+
+def events(m):
+    return [json.loads(p) for t, p, r in m.client.published if t.endswith("/event")]
+
+
+# --- decoding ---------------------------------------------------------------------
+
+def test_decoder_reads_code_and_maps_quad_to_full_frame():
+    r = QrDecoder().decode(qr_frame(), (0.4, 0.2, 0.9, 0.9))
+    assert r and r.text == PAYLOAD
+    assert 680 < r.quad[:, 0].min() < 760 and 280 < r.quad[:, 1].min() < 360
+    assert r.fingerprint == fingerprint(PAYLOAD) and len(r.fingerprint) == 8
+
+
+def test_decoder_gives_up_on_tiny_codes():
+    assert QrDecoder().decode(qr_frame(module_px=1.0)) is None
+
+
+def test_blackout_makes_code_unreadable():
+    img = qr_frame()
+    r = QrDecoder().decode(img)
+    assert QrDecoder().decode(blackout(img, [r.quad])) is None
+
+
+# --- scanner window ----------------------------------------------------------------
+
+def test_scan_verifies_code_without_leaking_it(tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    s, m = scanner(tmp_path, [qr_frame(None), qr_frame()])
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["label"] == "Plumber"
+    assert ev["code_type"] == "static" and ev["code_id"] == "TESTCODE" and ev["frames"] == 2
+    # The payload must not appear anywhere: MQTT, logs, the published image.
+    assert PAYLOAD.encode() not in m.client.all_bytes()
+    assert PAYLOAD not in caplog.text
+    img = cv2.imdecode(np.frombuffer(s.last_jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert QrDecoder().decode(img) is None
+    # Events and images are never retained; the window closes after the read.
+    assert all(not r for t, _, r in m.client.published if t.endswith(("/event", "/image")))
+    s.stop_event.set()
+
+
+def test_scan_times_out_when_no_code(tmp_path):
+    s, m = scanner(tmp_path, [qr_frame(None)], window_s=0.5, frame_interval_s=0.05)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "scan_timeout" and ev["frames"] >= 2
+    scanning = [p for t, p, _ in m.client.published if t.endswith("/scanning")]
+    assert scanning == ["ON", "OFF"]
+    s.stop_event.set()
+
+
+def test_no_scanning_without_a_trigger(tmp_path):
+    s, m = scanner(tmp_path, [qr_frame()])
+    s.thread.start()
+    time.sleep(0.3)
+    assert s.source.i == 0 and not events(m)
+    s.stop_event.set()
+
+
+def test_fetch_failures_end_in_timeout_not_a_read(tmp_path):
+    class Broken:
+        name = "fake"
+
+        def fetch(self, timeout=None):
+            raise FetchError("down")
+    s, m = scanner(tmp_path, [], window_s=0.3)
+    s.source = Broken()
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m), timeout=5)
+    assert events(m)[0]["event_type"] == "scan_timeout" and events(m)[0]["fetch_failures"] >= 1
+    s.stop_event.set()
+
+
+def test_debug_frames_are_capped(tmp_path):
+    s, _ = scanner(tmp_path, [qr_frame(None)], debug_frames=True)
+    for _ in range(DEBUG_MAX_FILES + 5):
+        s._save_debug(b"x")
+        time.sleep(0.002)
+    assert len(s.debug_files()) == DEBUG_MAX_FILES
+
+
+# --- MQTT ----------------------------------------------------------------------------
+
+def test_discovery_under_own_node_id_and_retained_press_ignored():
+    pressed = []
+    m = AccessMqtt(None, "test", on_scan=pressed.append, on_connected=lambda: None,
+                   client=FakePaho())
+    m.publish_discovery("door", "Door")
+    topics = [t for t, _, _ in m.client.published]
+    configs = [t for t in topics if t.endswith("/config")]
+    assert configs and all(t.split("/")[2] == "tagsense_access" for t in configs)
+    event_cfg = next(json.loads(p) for t, p, _ in m.client.published if "/event/" in t)
+    assert event_cfg["state_topic"] == "tagsense/access/door/event"
+    assert event_cfg["availability_topic"] == AVAILABILITY
+
+    class Msg:
+        def __init__(self, topic, retain):
+            self.topic, self.payload, self.retain = topic, b"PRESS", retain
+    m._handle_message(None, None, Msg("tagsense/access/door/cmd/scan", True))
+    m._handle_message(None, None, Msg("tagsense/door/cmd/scan", False))
+    assert pressed == []
+    m._handle_message(None, None, Msg("tagsense/access/door/cmd/scan", False))
+    assert pressed == ["door"]
+
+
+def test_access_login_required_and_separate():
+    opts = dict(DEFAULT_OPTIONS, mqtt_host="broker", mqtt_username="addons", mqtt_password="x")
+    with pytest.raises(AccessError, match="access_mqtt_username"):
+        access_mqtt_config(opts)
+    with pytest.raises(AccessError, match="separate MQTT user"):
+        access_mqtt_config(opts | {"access_mqtt_username": "addons", "access_mqtt_password": "y"})
+    cfg = access_mqtt_config(opts | {"access_mqtt_username": "tagsense_access",
+                                     "access_mqtt_password": "y"})
+    assert (cfg.host, cfg.username) == ("broker", "tagsense_access")
+
+
+# --- config ----------------------------------------------------------------------------
+
+def test_scanner_config_validation():
+    ok = {"name": "Front door", "source": "ha_camera", "camera_entity": "camera.door"}
+    assert parse_scanner(ok).id == "front_door"
+    for bad, msg in (({"window_s": 1}, "window_s must be 5-120"),
+                     ({"crop_x1": 0.5, "crop_x2": 0.4}, "crop is empty"),
+                     ({"source": "rtsp"}, "source must be"),
+                     ({"camera_entity": ""}, "camera_entity is required")):
+        with pytest.raises(ConfigError, match=msg):
+            parse_scanner(ok | bad)
+
+
+# --- app integration ---------------------------------------------------------------------
+
+def make_app(tmp_path, **opts):
+    return App(dict(DEFAULT_OPTIONS, go2rtc_url="http://x", **opts), mqtt=FakeMqtt(),
+               source_factory=fake_source, data_dir=str(tmp_path),
+               access_mqtt=access_mqtt(),
+               access_source_factory=lambda c, o: SeqSource([qr_frame(FOREIGN)]))
+
+
+def test_access_off_by_default_and_not_imported(tmp_path):
+    code = ("import sys; sys.path.insert(0, 'tests'); sys.path.insert(0, '.');"
+            "from test_web import FakeMqtt, fake_source; from app.main import App, DEFAULT_OPTIONS;"
+            f"a = App(dict(DEFAULT_OPTIONS), mqtt=FakeMqtt(), source_factory=fake_source, "
+            f"data_dir={str(tmp_path)!r});"
+            "assert a.access is None;"
+            "assert not [m for m in sys.modules if m.startswith('app.access')], 'imported';"
+            "print('ok')")
+    r = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).parents[1],
+                       capture_output=True, text=True)
+    assert r.stdout.strip() == "ok", r.stderr
+    api = Api(make_app(tmp_path))
+    assert api.state()["access"] == {"enabled": False, "error": None}
+    for call in (lambda: api.access_status(), lambda: api.access_scan("door"),
+                 lambda: api.access_create({"name": "Door"})):
+        with pytest.raises(ApiError) as e:
+            call()
+        assert e.value.status == 404
+
+
+def test_access_without_login_stays_off_and_bin_runs(tmp_path):
+    app = App(dict(DEFAULT_OPTIONS, go2rtc_url="http://x", access_enabled=True,
+                   mqtt_host="broker"),
+              mqtt=FakeMqtt(), source_factory=fake_source, data_dir=str(tmp_path))
+    assert app.access is None and "access_mqtt_username" in app.access_error
+    assert Api(app).state()["access"]["error"] == app.access_error
+
+
+def test_panel_manages_scanners_and_scans(tmp_path):
+    app = make_app(tmp_path, access_enabled=True)
+    api, acc = Api(app), app.access
+    acc.start()
+    sid = api.access_create({"name": "Front door", "source": "go2rtc", "go2rtc_stream": "doorbell",
+                             "crop_x1": 0.4, "window_s": 5})["id"]
+    assert sid == "front_door" and ScannerStore(acc.dir).load()[0].crop_x1 == 0.4
+    m = acc.mqtt
+    assert any("tagsense_access/front_door_code/config" in t for t, _, _ in m.client.published)
+    api.access_scan(sid)
+    assert wait_for(lambda: any(e["event_type"] == "unrecognised"     # a foreign code
+                                for e in api.access_status()["scanners"][0]["events"]))
+    assert api.access_image(sid)
+    with pytest.raises(ApiError, match="window_s"):
+        api.access_update(sid, {"window_s": 500})
+    api.access_delete(sid)
+    cleared = [t for t, p, r in m.client.published if p == b"" and r]
+    assert any(t.endswith("front_door_code/config") for t in cleared)
+    assert (Path(acc.dir).stat().st_mode & 0o777) == 0o700
+    acc.stop()
+
+
+# --- stream capture --------------------------------------------------------------------
+
+class FakeCapture:
+    """Stands in for cv2.VideoCapture: yields frames at a steady rate."""
+
+    def __init__(self, frames, opened=True, delay=0.01):
+        self.frames, self.opened, self.delay, self.i = frames, opened, delay, 0
+
+    def isOpened(self):
+        return self.opened
+
+    def read(self):
+        time.sleep(self.delay)
+        if self.i >= len(self.frames):
+            return False, None
+        self.i += 1
+        return True, self.frames[self.i - 1]
+
+    def release(self):
+        pass
+
+
+class StreamSource(SeqSource):
+    stream_url = "http://go2rtc/api/stream.mp4?src=door"
+
+
+def stream_scanner(tmp_path, cap, snapshot_frames, **cfg):
+    s, m = scanner(tmp_path, snapshot_frames, **cfg)
+    s.source = StreamSource(snapshot_frames)
+    s.capture_factory = lambda url: cap
+    return s, m
+
+
+def test_stream_capture_reads_code_without_snapshots(tmp_path):
+    frames = [qr_frame(None)] * 20 + [qr_frame()] * 30
+    s, m = stream_scanner(tmp_path, FakeCapture(frames), [qr_frame(None)], window_s=5)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["capture"] == "stream"
+    assert s.last_stats["frames_decoded"] >= ev["frames"] and "first_frame_s" in ev
+    assert s.source.i == 0                      # no single-JPEG fetches at all
+    assert s.last_stats["result"] == "verified" and s.stream is None
+    s.stop_event.set()
+
+
+def test_stream_that_fails_falls_back_to_snapshots(tmp_path):
+    s, m = stream_scanner(tmp_path, FakeCapture([], opened=False), [qr_frame(None), qr_frame()],
+                          window_s=5)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["capture"] == "stream, stream failed: snapshots"
+    assert "could not open" in s.last_stats["stream_error"] and s.source.i == 2
+    s.stop_event.set()
+
+
+def test_snapshot_mode_never_opens_a_stream(tmp_path):
+    opened = []
+    s, m = stream_scanner(tmp_path, None, [qr_frame()], capture="snapshot")
+    s.capture_factory = lambda url: opened.append(url)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    assert events(m)[0]["capture"] == "snapshot" and opened == []
+    s.stop_event.set()
+
+
+def test_real_video_file_through_ffmpeg(tmp_path):
+    """The real OpenCV/FFmpeg path: an MP4 whose code appears part-way through."""
+    path = str(tmp_path / "door.mp4")
+    w = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (1280, 720))
+    if not w.isOpened():
+        pytest.skip("no mp4 writer in this OpenCV build")
+    for i in range(40):
+        w.write(qr_frame(None if i < 15 else PAYLOAD, module_px=6, seed=i))
+    w.release()
+
+    class FileSource(SeqSource):
+        stream_url = path
+    s, m = scanner(tmp_path, [qr_frame(None)], window_s=10)
+    s.source = FileSource([qr_frame(None)])
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m), timeout=15)
+    assert events(m)[0]["event_type"] == "verified" and events(m)[0]["capture"] == "stream"
+    s.stop_event.set()
+
+
+def test_go2rtc_url_without_scheme_and_stream_url():
+    from app.sources import Go2rtcSource
+    src = Go2rtcSource("frigate-host:1984/", "front door")
+    assert src.url == "http://frigate-host:1984/api/frame.jpeg"
+    assert src.stream_url == "http://frigate-host:1984/api/stream.mp4?src=front%20door"
+
+
+def test_real_phone_screen_frames(testdata):
+    """Real camera frames of a phone showing a QR code (test-frames/qr, not
+    committed): ZXing reads every one, including a frame where the bright
+    screen bled into the dark modules and OpenCV found nothing."""
+    files = sorted((testdata / "qr").glob("*.*")) if (testdata / "qr").is_dir() else []
+    if not files:
+        pytest.skip("no frames in test-frames/qr")
+    dec = QrDecoder()
+    misses = [f.name for f in files if not dec.decode(cv2.imread(str(f)))]
+    assert not misses, misses
+
+
+# --- stage 3: verification in the scan window -----------------------------------------
+
+def two_codes(left, right):
+    """One frame with two codes side by side (e.g. a phone's share sheet)."""
+    img = qr_frame(left, at=(150, 250))
+    q = qr_frame(right, at=(750, 250))
+    img[:, 640:] = q[:, 640:]
+    return img
+
+
+def test_valid_code_next_to_foreign_one(tmp_path):
+    s, m = scanner(tmp_path, [two_codes(FOREIGN, PAYLOAD)])
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    kinds = [e["event_type"] for e in events(m)]
+    # The window ends at the verified code; the foreign one may or may not have
+    # been reported first (ZXing's order), but at most once and by fingerprint only.
+    assert "verified" in kinds and kinds.count("unrecognised") <= 1 and len(kinds) <= 2
+    for unrec in (e for e in events(m) if e["event_type"] == "unrecognised"):
+        assert set(unrec) == {"event_type", "scanned_at", "scanner", "fingerprint"}
+    img = cv2.imdecode(np.frombuffer(s.last_jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert QrDecoder().decode_all(img) == []          # both codes blacked out
+    s.stop_event.set()
+
+
+def bad_code(i):
+    """Well-formed but wrongly signed static code."""
+    return codes.static_code(b"x" * 32, "A", f"BADCODE{codes.B32[i]}", EXPIRY)
+
+
+def test_same_bad_code_counts_once_and_invalid_reveals_nothing(tmp_path):
+    s, m = scanner(tmp_path, [qr_frame(bad_code(0))] * 30, window_s=1.0)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    evs = events(m)
+    assert [e["event_type"] for e in evs] == ["invalid", "scan_timeout"]
+    assert set(evs[0]) == {"event_type", "scanned_at", "scanner", "fingerprint"}
+    assert not s.verifier.locked_until("door")
+    s.stop_event.set()
+
+
+def test_four_bad_codes_lock_out_and_a_locked_scanner_does_not_look(tmp_path):
+    frames = [qr_frame(bad_code(i), seed=i) for i in range(4)] + [qr_frame()]
+    s, m = scanner(tmp_path, frames, window_s=5)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    kinds = [e["event_type"] for e in events(m)]
+    assert kinds == ["invalid"] * 4 + ["locked_out"]        # the valid code is never reached
+    fetched = s.source.i
+    s.scan()                                               # locked: no frames are fetched
+    assert wait_for(lambda: len(events(m)) == 6 and not s.scanning)
+    assert events(m)[-1]["event_type"] == "locked_out" and s.source.i == fetched
+    s.stop_event.set()
+
+
+def test_debug_frames_never_hold_a_readable_tagsense_code(tmp_path):
+    s, m = scanner(tmp_path, [two_codes(FOREIGN, PAYLOAD)], debug_frames=True)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    saved = [cv2.imread(os.path.join(s.debug_dir, f)) for f in s.debug_files()]
+    assert saved
+    texts = {r.text for img in saved for r in QrDecoder().decode_all(img)}
+    assert texts == {FOREIGN}                       # ours blacked out, the test code kept
+    s.stop_event.set()
+
+
+def test_auto_capture_snapshots_until_the_stream_runs(tmp_path):
+    class SlowStart(FakeCapture):
+        def read(self):
+            if self.i == 0:
+                time.sleep(0.6)                    # the stream takes a while to start
+            return super().read()
+    s, m = scanner(tmp_path, [qr_frame(None)], window_s=3)
+    s.cfg = ScannerConfig(**{**s.cfg.to_dict(), "capture": "auto", "camera_entity": "camera.door"})
+    s.source = StreamSource([qr_frame(None)])       # go2rtc: has the stream URL
+    s.snapshot_source = SeqSource([qr_frame(None)])
+    s.capture_factory = lambda url: SlowStart([qr_frame(None)] * 5 + [qr_frame()] * 50)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["capture"] == "auto"
+    assert s.snapshot_source.i >= 1 and s.last_stats["stream_from_s"] >= 0.5
+    assert s.last_stats["first_frame_s"] < s.last_stats["stream_from_s"]
+    s.stop_event.set()
+
+
+def test_auto_capture_config_rules():
+    both = {"name": "Door", "source": "go2rtc", "go2rtc_stream": "door", "camera_entity": "camera.door"}
+    assert parse_scanner(both).capture == "auto"                     # default with both
+    assert parse_scanner(both | {"capture": "stream"}).capture == "stream"
+    assert parse_scanner({**both, "camera_entity": ""}).capture == "stream"
+    with pytest.raises(ConfigError, match="auto capture needs both"):
+        parse_scanner({**both, "camera_entity": "", "capture": "auto"})
+
+
+# --- step 3: admin API for passes and static codes ----------------------------------------
+
+def test_every_access_route_404s_and_loads_nothing_when_off(tmp_path):
+    code = f"""
+import sys, re
+sys.path.insert(0, 'tests'); sys.path.insert(0, '.')
+from test_web import FakeMqtt, fake_source
+from app.main import App, DEFAULT_OPTIONS
+from app.web import Api, ApiError, ROUTES, NO_BODY
+api = Api(App(dict(DEFAULT_OPTIONS), mqtt=FakeMqtt(), source_factory=fake_source, data_dir={str(tmp_path)!r}))
+n = 0
+for method, pattern, name in ROUTES:
+    if not name.startswith("access_"):
+        continue
+    args = [m for m in re.findall(r"\\(\\?P<(\\w+)>", pattern)]
+    vals = {{"sid": "door", "handle": "ABCD", "code_id": "ABCDEFGH"}}
+    body = method in ("POST", "PUT", "PATCH") and name not in NO_BODY
+    call = [vals[a] for a in args] + ([{{}}] if body else [])
+    try:
+        getattr(api, name)(*call)
+        raise SystemExit(f"{{name}} did not refuse")
+    except ApiError as e:
+        assert e.status == 404, (name, e.status)
+        n += 1
+assert not [m for m in sys.modules if m.startswith('app.access')], 'imported'
+print('ok', n)
+"""
+    r = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).parents[1],
+                       capture_output=True, text=True)
+    assert r.stdout.startswith("ok"), r.stderr
+    assert int(r.stdout.split()[1]) >= 18
+
+
+def admin_app(tmp_path):
+    from app.users import HaUser, UserDirectory
+    app = make_app(tmp_path, access_enabled=True)
+    app.users = UserDirectory(fetch=lambda: [HaUser("u1", "Luke", True, True),
+                                             HaUser("u2", "Sam", False, True)], token="x")
+    return app, Api(app)
+
+
+def test_admin_passes_api(tmp_path):
+    app, api = admin_app(tmp_path)
+    d = api.access_codes()
+    assert {u["name"] for u in d["users"]} == {"Luke", "Sam"} and d["people"] == []
+    h = api.access_person_add({"label": "Sam", "ha_user_id": "u2"})["handle"]
+    with pytest.raises(ApiError, match="already has a pass"):
+        api.access_person_add({"label": "Sam again", "ha_user_id": "u2"})
+    p = api.access_codes()["people"][0]
+    assert p["handle"] == h and p["ha_user_name"] == "Sam" and "secret" not in p
+    api.access_person_update(h, {"enabled": False})
+    assert api.access_codes()["people"][0]["enabled"] is False
+    old_v = app.access.codes.person(h).v
+    api.access_person_reenrol(h)
+    assert app.access.codes.person(h).v != old_v
+    api.access_person_delete(h)
+    assert api.access_codes()["people"] == []
+    assert "secret" not in json.dumps(api.access_codes())
+
+
+def test_admin_static_codes_api(tmp_path):
+    app, api = admin_app(tmp_path)
+    with pytest.raises(ApiError, match="expiry, a number of uses"):
+        api.access_static_issue({"label": "Plumber"})
+    cid = api.access_static_issue({"label": "Plumber", "uses": "1"})["code_id"]
+    png = api.access_static_png(cid)
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    payload = QrDecoder().decode(img).text
+    assert codes.parse(payload).code_id == cid
+    listing = api.access_codes()
+    assert payload not in json.dumps(listing)                 # the list never carries the code
+    assert listing["static"][0]["status"] == "active" and listing["static"][0]["uses_left"] == 1
+    api.access_static_revoke(cid)
+    with pytest.raises(ApiError) as e:
+        api.access_static_png(cid)
+    assert e.value.status == 410
+    cid2 = api.access_static_issue({"label": "Painter", "uses": 2})["code_id"]
+    assert api.access_static_revoke_all() == {"revoked": 1}
+    v = api.access_codes()["key_version"]
+    assert api.access_rotate_key()["key_version"] != v
+    assert app.access.verifier.verify(payload, "door").status == "invalid"
+
+
+def test_admin_clear_lockout(tmp_path):
+    app, api = admin_app(tmp_path)
+    sid = api.access_create({"name": "Door", "source": "go2rtc", "go2rtc_stream": "d"})["id"]
+    app.access.verifier.register_bad(sid, 9)
+    assert api.access_status()["scanners"][0]["locked_until"]
+    api.access_clear_lockout(sid)
+    assert api.access_status()["scanners"][0]["locked_until"] is None
+
+
+# --- confirm-back --------------------------------------------------------------------
+
+def test_confirm_book_once_and_expiry():
+    from app.access.confirm import CONFIRM_TTL_S, ConfirmBook
+    now = [100.0]
+    book = ConfirmBook(clock=lambda: now[0])
+    eid = book.issue({"label": "Luke"})
+    assert len(eid) >= 22 and book.confirm(eid) == {"label": "Luke"}
+    assert book.confirm(eid) is None                      # once only
+    late = book.issue({"label": "Sam"})
+    now[0] += CONFIRM_TTL_S + 1
+    assert book.confirm(late) is None                     # expired
+    assert book.confirm("not-an-id-at-all-xx") is None
+
+
+def test_verified_event_carries_a_confirmable_id(tmp_path):
+    from app.access.confirm import ConfirmBook
+    s, m = scanner(tmp_path, [qr_frame()])
+    s.confirm = ConfirmBook()
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["event_id"]
+    assert s.confirm.confirm(ev["event_id"])["label"] == "Plumber"
+    s.stop_event.set()
+
+
+def test_confirm_http_route(tmp_path, monkeypatch):
+    import urllib.request
+    from app import web
+    app, api = admin_app(tmp_path)
+    eid = app.access.confirm.issue({"label": "Luke", "code_type": "rotating", "code_id": "ABCD",
+                                    "scanner": "door"})
+    token = app.access.codes.confirm_token()
+
+    def post(path, auth=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", method="POST",
+                                     data=b"", headers={"Authorization": auth} if auth else {})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            return e.code, json.loads(body) if body.startswith(b"{") else body
+
+    # Not from Home Assistant's address: refused like any non-ingress request.
+    srv = web.start_web(app, 0, allow_all=False)
+    try:
+        assert post(f"/api/confirm/{eid}", f"Bearer {token}")[0] == 403
+    finally:
+        srv.shutdown()
+    monkeypatch.setattr(web, "CONFIRM_IPS", {"127.0.0.1"})
+    srv = web.start_web(app, 0, allow_all=False)
+    try:
+        assert post(f"/api/confirm/{eid}")[0] == 401                       # no token
+        assert post(f"/api/confirm/{eid}", "Bearer wrong")[0] == 401
+        status, body = post(f"/api/confirm/{eid}", f"Bearer {token}")
+        assert status == 200 and body["confirmed"] is True and body["label"] == "Luke"
+        assert post(f"/api/confirm/{eid}", f"Bearer {token}")[1] == {"confirmed": False}   # once
+        # The address alone opens nothing else.
+        assert post("/api/access/rotate_key", f"Bearer {token}")[0] == 403
+        # A rotated token stops the old one.
+        api.access_confirm_rotate()
+        eid2 = app.access.confirm.issue({"label": "Sam"})
+        assert post(f"/api/confirm/{eid2}", f"Bearer {token}")[0] == 401
+    finally:
+        srv.shutdown()
+
+
+def test_confirm_not_reachable_through_ingress(tmp_path):
+    from test_guard import call
+    from app import web
+    app, api = admin_app(tmp_path)
+    eid = app.access.confirm.issue({"label": "Luke"})
+    srv = web.start_web(app, 0, allow_all=True, trust_admin=True)
+    try:
+        # Through the panel (ingress) there is no confirm route and no token.
+        status, _ = call(srv, "POST", f"/api/confirm/{eid}", "u1")
+        assert status == 401
+        assert app.access.confirm.confirm(eid) is not None                # still unused
+    finally:
+        srv.shutdown()
+
+
+def test_scanner_settings_travel_in_export_but_no_secrets(tmp_path):
+    src, src_api = admin_app(tmp_path / "a")
+    src_api.access_create({"name": "Front door", "source": "go2rtc", "go2rtc_stream": "doorbell",
+                           "camera_entity": "camera.door", "crop_x1": 0.3, "window_s": 15})
+    src_api.access_person_add({"label": "Luke", "ha_user_id": "u1"})
+    src_api.access_static_issue({"label": "Plumber", "uses": 1})
+    text = json.dumps(src_api.export())
+    assert "secret" not in text and "Plumber" not in text and "Luke" not in text
+    assert codes.parse(text) is None
+
+    dst, dst_api = admin_app(tmp_path / "b")
+    r = dst_api.import_({"text": text})
+    assert r["scanners"] == {"added": ["front_door"], "updated": []}
+    sc = dst.access.configs[0]
+    assert (sc.crop_x1, sc.window_s, sc.capture) == (0.3, 15.0, "auto")
+    assert dst.access.codes.people() == [] and dst.access.codes.static_codes() == []
+    assert dst_api.import_({"text": text})["scanners"] == {"added": [], "updated": ["front_door"]}
+
+    off = make_app(tmp_path / "c")                          # access not enabled there
+    r = Api(off).import_({"text": text})
+    assert "not enabled" in r["scanners"]["skipped"] and r["updated"] == []
