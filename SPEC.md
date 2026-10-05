@@ -274,14 +274,36 @@ path to any lock.
   required login** (`access_mqtt_username`/`access_mqtt_password`, client ID
   `tagsense-access`). It refuses to run with the same username as the main
   connection.
-- **The ACL.** A broker ACL (DOCS.md) makes these topics writable only by
-  that login:
-  - `tagsense/access/#`
-  - the discovery topics, under the node ID `tagsense_access`
-    (`homeassistant/<component>/tagsense_access/<sid>_<key>/config`)
-
-  Without the discovery rule, another app could republish our entity's
-  config with a `state_topic` it controls.
+- **Broker ACLs do not work.** The plan was a Mosquitto ACL letting only that
+  login write these topics. Tested on 2026-10-05, it is ineffective:
+  - The Home Assistant Mosquitto app (7.x) authenticates through go-auth with
+    an HTTP backend whose `/superuser` and `/acl` endpoints are its own nginx
+    returning 200 for every user. So every user is a superuser, and the ACL
+    file is never consulted.
+  - A fake `verified` event was published and received with Home Assistant's
+    own login, an HA-user login (`mqtt_user`) and a broker-only login
+    (`acltest`) that had explicit `topic deny` lines.
+  - The app's docs also require `homeassistant` and `addons` to have
+    unrestricted access.
+  - **Consequence:** any MQTT client can forge an access event. Hence
+    confirm-back (below).
+- **Confirm-back** (`confirm.py`, the `/api/confirm/<id>` route in
+  `web.py`):
+  - Each `verified` event carries `event_id` (128-bit random, from
+    `secrets`).
+  - Home Assistant's `rest_command` POSTs it with `Authorization: Bearer
+    <token>`. The token is 256-bit, stored in `keys.json` and shown to
+    admins.
+  - The ID is confirmed **once**, **within 30 s**, then forgotten. It lives
+    in memory only, so a restart confirms nothing.
+  - The route is reachable only from `172.30.32.1` (HA Core's address on the
+    hassio network) and is checked before the ingress-only rule. The address
+    is not trusted alone: host-network apps share it, hence the token,
+    compared in constant time.
+  - It is not reachable through ingress (no route there), so a panel user
+    can't confirm either.
+  - Tests cover: once only, expiry, wrong or missing token, a wrong address,
+    the ingress path, and token rotation.
 - **Topics:**
   - `tagsense/access/availability` (LWT)
   - `<sid>/event` (event entity; **never retained**, so a restart cannot
@@ -468,6 +490,8 @@ old.
 - Replay is limited by single-use pass steps and static uses or expiry.
 - A forwarded static code can't be prevented, only limited (expiry, uses,
   revoke).
-- Fake events are prevented by the dedicated MQTT login and the broker ACL
-  (still to be verified live on the development broker).
+- Fake MQTT events **cannot** be prevented at the broker (see "Broker ACLs
+  do not work"). Automations that matter confirm each event back to TagSense
+  (one-time ID, 30 s, token, HA Core's address only); plain notifications
+  accept the risk.
 - TagSense holds no lock credentials.

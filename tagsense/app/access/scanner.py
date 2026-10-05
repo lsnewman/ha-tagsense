@@ -53,12 +53,13 @@ def now_iso() -> str:
 class Scanner:
     def __init__(self, cfg: ScannerConfig, source: Source, mqtt, access_dir: str,
                  stop_event: threading.Event, capture_factory=open_capture,
-                 verifier=None, snapshot_source: Source | None = None):
+                 verifier=None, snapshot_source: Source | None = None, confirm=None):
         self.cfg = cfg
         self.source = source                    # snapshots (and the stream URL for go2rtc)
         self.snapshot_source = snapshot_source  # auto mode: the HA camera
         self.mqtt = mqtt
         self.verifier = verifier                # None: every TagSense code is "unavailable"
+        self.confirm = confirm                  # ConfirmBook: one-time IDs for verified events
         self.stop_event = stop_event
         self.debug_dir = os.path.join(access_dir, "debug", cfg.id)
         self.cond = threading.Condition()
@@ -258,6 +259,9 @@ class Scanner:
         if res_status == "verified":
             attrs.update(capture=st["capture"], first_frame_s=st.get("first_frame_s"),
                          frames=st["frames"])
+            if self.confirm is not None:        # for automations that confirm it first
+                attrs["event_id"] = self.confirm.issue(
+                    {k: attrs.get(k) for k in ("label", "code_type", "code_id")} | {"scanner": self.id})
         log.info("access [%s]: %s %s code%s", self.id, res_status, attrs.get("code_type", "TagSense"),
                  f" '{attrs['label']}' ({attrs.get('code_id')})" if attrs.get("label")
                  else f", fingerprint {r.fingerprint}")

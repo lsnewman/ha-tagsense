@@ -137,7 +137,9 @@ def test_export_import_round_trip(app, tmp_path):
         {"name": "Car", "tag_id": 9, "source": "go2rtc", "go2rtc_stream": "cam2",
          "settings": {"poll_interval": 120}}])
     api.settings("bin", {"crop_x1": 0.5})
-    assert api.import_({"text": text}) == {"added": ["car"], "updated": ["bin"]}
+    r = api.import_({"text": text})
+    assert (r["added"], r["updated"]) == (["car"], ["bin"])
+    assert r["history"]["bin"]["checks_added"] == 0          # its own history: nothing doubled
     assert set(app.objects) == {"bin", "car"}
     assert app.objects["bin"].settings.crop_x1 == 0.3
     assert app.objects["car"].settings.poll_interval == 120
@@ -232,3 +234,48 @@ def test_http_rejects_non_ingress_clients(app):
         assert http(server, "GET", "/api/state")[0] == 403
     finally:
         server.shutdown()
+
+
+def test_history_round_trip_without_doubling(tmp_path):
+    """dev -> main -> dev: chart records merge once; the newer learned position wins."""
+    import time as _t
+    from app.reference import Reference
+    from app.web import Api
+
+    def install(name):
+        d = tmp_path / name
+        d.mkdir()
+        ObjectStore(str(d)).save(parse_list(
+            [{"name": "Bin", "tag_id": 5, "source": "go2rtc", "go2rtc_stream": "cam"}]))
+        a = App(dict(DEFAULT_OPTIONS, go2rtc_url="http://x"), mqtt=FakeMqtt(),
+                source_factory=fake_source, data_dir=str(d))
+        return a, Api(a)
+
+    main, main_api = install("main")
+    dev, dev_api = install("dev")
+    now = _t.time()
+    for i in range(3):
+        main.objects["bin"].checklog.append({"t": now - 300 + i, "hits": 2})
+    main.objects["bin"].reference = Reference(hits=40, size=0.05, cx=0.9, cy=0.6, updated=now - 100)
+    dev.objects["bin"].checklog.append({"t": now - 10, "hits": 1})
+    dev.objects["bin"].reference = Reference(hits=12, size=0.07, cx=0.88, cy=0.4, updated=now - 5)
+
+    r = dev_api.import_({"text": json.dumps(main_api.export())})
+    assert r["history"]["bin"] == {"checks_added": 3, "reference_taken": False}   # dev's is newer
+    assert len(dev.objects["bin"].chart_points()) == 4
+    r = main_api.import_({"text": json.dumps(dev_api.export())})
+    assert r["history"]["bin"] == {"checks_added": 1, "reference_taken": True}
+    assert len(main.objects["bin"].chart_points()) == 4
+    assert main.objects["bin"].reference.hits == 12
+    r = dev_api.import_({"text": json.dumps(main_api.export())})                  # and back again
+    assert r["history"]["bin"]["checks_added"] == 0
+    assert len(dev.objects["bin"].chart_points()) == 4
+
+
+def test_import_without_history_still_works(app):
+    from app.web import Api
+    api = Api(app)
+    old = {"tagsense": 1, "objects": [{"id": "bin", "name": "Bin", "tag_id": 5,
+                                        "source": "go2rtc", "go2rtc_stream": "cam"}]}
+    r = api.import_({"text": json.dumps(old)})
+    assert r["updated"] == ["bin"] and r["history"] == {}

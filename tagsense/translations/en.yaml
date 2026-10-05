@@ -57,11 +57,11 @@ configuration:
     name: MQTT password (override)
     description: Only with an MQTT host override.
   access_enabled:
-    name: Access codes (preview)
+    name: Access codes
     description: >-
       Turns on QR access scanning (off by default). It needs its own MQTT
-      login below and a broker ACL; see the Documentation tab. TagSense never
-      unlocks anything: it only emits events for your automations.
+      login below; see the Documentation tab. TagSense never unlocks
+      anything: it only emits events for your automations.
   access_mqtt_username:
     name: Access MQTT username
     description: >-

@@ -234,9 +234,10 @@ There are two kinds of code:
 
 ### Turning it on
 
-Access needs **its own MQTT login**. The login Home Assistant gives apps is
-shared by every app, so if TagSense used it, any other app could publish a
-fake access event.
+Access needs **its own MQTT login**, kept separate from the login shared by
+every app, so its traffic is clearly its own. A login cannot stop *other*
+clients on the broker from publishing a fake event, though: see *Confirming
+events* below for that.
 
 1. In the **Mosquitto broker** app (not the MQTT integration), add a login
    under *Logins*, for example `tagsense_access` with a long random password.
@@ -244,8 +245,7 @@ fake access event.
    integration or device (ESPHome, zigbee2mqtt, Node-RED, a phone app...), and
    never reuse its password. Anything that can log in as this user can fake an
    access event.
-2. Restrict who may write the access topics (see the ACL below).
-3. On TagSense's **Configuration** tab, set `access_enabled` to on, and set
+2. On TagSense's **Configuration** tab, set `access_enabled` to on, and set
    `access_mqtt_username` and `access_mqtt_password` to the new login. Then
    restart TagSense.
 
@@ -347,7 +347,9 @@ automation:
 ```
 
 What you do on `verified` (a notification, turning on a light, or, if you
-decide to, unlocking) is up to you. Notify on `invalid` and `locked_out` too,
+decide to, unlocking) is up to you. **Before unlocking, confirm the event**
+(see *Confirming events* below): anything on your MQTT broker could publish a
+fake one. Notify on `invalid` and `locked_out` too,
 so you hear about attempts.
 
 ### Passes and static codes (panel, admins)
@@ -395,46 +397,63 @@ to 50 frames for 24 h for checking; TagSense codes in them are blacked out.
   and can be limited to one use and revoked.
 - **Someone at the door with your phone unlocked:** not something a code can
   tell apart.
-- **Fake events:** prevented only if nothing else can publish to the access
-  topics, which is what the dedicated login and the ACL are for.
+- **Fake events:** anything that can log in to your MQTT broker (every app
+  given the MQTT service, Zigbee2MQTT, Frigate, devices with an MQTT
+  password) can publish a fake `verified` event. Fine for notifications; for
+  a lock, confirm each event first (below).
 
-### Broker ACL (required)
+### Confirming events (recommended before unlocking anything)
 
-Only the access login may write `tagsense/access/#` and the access
-discovery topics (`homeassistant/+/tagsense_access/#`). The Mosquitto app
-reads ACLs from `/share/mosquitto`:
+The MQTT broker cannot limit who publishes to TagSense's topics. The Home
+Assistant Mosquitto app treats every logged-in user as a superuser, so a
+Mosquitto ACL file has no effect. This was tested on 2026-10-05 with Home
+Assistant's own login, an HA-user login and a broker-only login: a fake
+`verified` event got through with each. So:
 
-1. In the Mosquitto app's configuration, set `customize` to
-   `active: true, folder: mosquitto`.
-2. Create `/share/mosquitto/acl.conf` containing
-   `acl_file /share/mosquitto/accesscontrollist`.
-3. Create `/share/mosquitto/accesscontrollist`:
+- **Simple:** act on `verified` events directly. Fine for a notification or
+  a light.
+- **Secure:** for a lock or anything else that matters, have the automation
+  ask TagSense to confirm the event first. Every `verified` event carries a
+  one-time `event_id`. TagSense confirms it **once**, **within 30 s**, and
+  only to a request from Home Assistant carrying a secret token. A faked
+  MQTT message cannot produce an ID TagSense will confirm.
 
+The **Access** page has a *Confirm events* card with the token and the exact
+YAML for your install, for example:
+
+```yaml
+# configuration.yaml
+rest_command:
+  tagsense_confirm:
+    url: "http://<tagsense-hostname>:8099/api/confirm/{{ event_id }}"
+    method: POST
+    headers:
+      authorization: !secret tagsense_confirm
+    timeout: 5
+
+# secrets.yaml
+tagsense_confirm: "Bearer <token from the Access page>"
 ```
-# Home Assistant itself: everything (it presses Scan and reads the events).
-user homeassistant
-topic readwrite #
 
-# The login shared by all apps (including TagSense's bin sensor):
-# everything except the access topics.
-user addons
-topic readwrite #
-topic deny tagsense/access/#
-topic deny homeassistant/+/tagsense_access/#
+Then, in the automation, before the action that matters:
 
-# TagSense's access login: only its own topics.
-user tagsense_access
-topic readwrite tagsense/access/#
-topic readwrite homeassistant/+/tagsense_access/#
-topic read homeassistant/status
+```yaml
+      - action: rest_command.tagsense_confirm
+        data:
+          event_id: "{{ trigger.to_state.attributes.event_id }}"
+        response_variable: confirm
+      - condition: template
+        value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"
+      - action: lock.unlock
+        target:
+          entity_id: lock.front_door
 ```
 
-Add a block like the `addons` one for every other login in your Mosquitto
-*Logins* list (for example, ESPHome devices or zigbee2mqtt). With an ACL
-file, a login that has no rules can do nothing. In Mosquitto, `deny` wins
-over the broader `readwrite #`. Restart the Mosquitto app, then **test**:
-with the `addons` login, publish to `tagsense/access/test/event`. A client
-subscribed with the `homeassistant` login must not receive it.
+If TagSense is restarted, unreachable, or the token is wrong, nothing is
+confirmed, so the lock stays shut. *Rotate token* on the Access page replaces
+the token; update `secrets.yaml` afterwards. Only requests from Home
+Assistant's own address reach the confirm step at all, and the token stops
+anything else that shares that address (apps on the host network).
 
 ## Tag and print notes
 

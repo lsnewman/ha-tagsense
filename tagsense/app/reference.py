@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from dataclasses import asdict, dataclass
 
 from .detector import Detection
@@ -27,6 +28,7 @@ class Reference:
     cx: float = 0.0         # normalised centre
     cy: float = 0.0
     orient: list | None = None  # normalised corners that define 0 deg (None = not set yet)
+    updated: float = 0.0        # unix time of the last change (export/import: newer wins)
 
     @property
     def ready(self) -> bool:
@@ -64,9 +66,11 @@ class Reference:
             self.cx += a * (cx - self.cx)
             self.cy += a * (cy - self.cy)
         self.hits += 1
+        self.updated = time.time()
 
     def set_orient(self, corners_norm):
         self.orient = [[round(float(x), 5), round(float(y), 5)] for x, y in corners_norm]
+        self.updated = time.time()
 
     def as_attrs(self) -> dict:
         return {"learned_hits": self.hits, "usual_size_pct": round(self.size * 100, 2),

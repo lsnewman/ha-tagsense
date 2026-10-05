@@ -118,3 +118,12 @@ def test_pass_when_access_is_off(tmp_path):
         assert call(srv, "GET", "/api/state", KID)[0] == 403
     finally:
         srv.shutdown()
+
+
+def test_inverted_pass_still_reads(server):
+    srv, app, api = server
+    api.access_person_add({"label": "Sam", "ha_user_id": KID})
+    status, png = call(srv, "GET", "/api/pass.png?invert=1", KID)
+    img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    assert status == 200 and img[0, 0].mean() < 50                  # black background
+    assert isinstance(codes.parse(QrDecoder().decode(img).text), codes.Rotating)

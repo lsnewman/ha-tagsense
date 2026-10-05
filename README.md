@@ -69,9 +69,10 @@ holds up a code on their phone, and TagSense reports whether it is valid:
 - a rotating **pass** for Home Assistant users;
 - a time-limited **static code** to send to a tradesperson.
 
-It is off by default, needs its own MQTT login and a broker ACL, and **never
-unlocks anything**: your automations decide what a verified code does. See
-the app's Documentation tab.
+It is off by default and needs its own MQTT login. It **never unlocks
+anything**: your automations decide what a verified code does, and for a lock
+they can ask TagSense to confirm each event first. See the app's
+Documentation tab.
 
 ## Requirements
 

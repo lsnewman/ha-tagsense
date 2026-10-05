@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import hmac
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,8 +24,13 @@ from .tagprint import tag_png, tag_svg
 log = logging.getLogger("tagsense.web")
 
 INGRESS_IPS = {"172.30.32.2"}
+# Home Assistant Core reaches apps from the hassio network's gateway. Only the
+# confirm route accepts it, and only with the confirm token: apps on the host
+# network share this address, so the address alone proves nothing.
+CONFIRM_IPS = {"172.30.32.1"}
+CONFIRM_RE = re.compile(r"/api/confirm/([A-Za-z0-9_-]{16,64})")
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
-MAX_BODY = 64 * 1024
+MAX_BODY = 8 * 1024 * 1024        # an import with a day of chart history per object
 CONFIG_FIELDS = ("name", "tag_family", "tag_id", "source", "go2rtc_stream", "camera_entity",
                  "fallback")
 
@@ -150,6 +156,7 @@ class Api:
             if o := self.app.objects.get(c.id):
                 with o.cond:
                     entry["settings"] = o.settings_values()
+                entry["history"] = o.export_history()      # chart log + learned position
             out.append(entry)
         return {"tagsense": 1, "objects": out}
 
@@ -166,7 +173,7 @@ class Api:
             raise ApiError(400, "expected a list of objects (as exported)")
         configs = list(self.app.configs)
         by_id = {c.id: i for i, c in enumerate(configs)}
-        added, updated, settings = [], [], {}
+        added, updated, settings, histories = [], [], {}, {}
         for n, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 raise ApiError(400, f"objects[{n}]: expected an object")
@@ -185,6 +192,8 @@ class Api:
                 added.append(oc.id)
             if isinstance(entry.get("settings"), dict):
                 settings[oc.id] = entry["settings"]
+            if isinstance(entry.get("history"), dict):
+                histories[oc.id] = entry["history"]
         for oid, values in settings.items():      # check before changing anything
             if unknown := set(values) - set(SETTING_KEYS):
                 raise ApiError(400, f"{oid}: unknown setting(s) {sorted(unknown)}")
@@ -192,8 +201,12 @@ class Api:
             self._apply(configs)
         for oid, values in settings.items():
             self.settings(oid, values)
+        history = {}
+        for oid, h in histories.items():
+            if o := self.app.objects.get(oid):
+                history[oid] = o.import_history(h)
         log.info("imported objects: added %s, updated %s", added or "none", updated or "none")
-        return {"added": added, "updated": updated}
+        return {"added": added, "updated": updated, "history": history}
 
     def frame(self, oid: str, max_age_s: float) -> bytes:
         try:
@@ -244,13 +257,13 @@ class Api:
         return {"available": True, "has_pass": True, "label": p.label, "period": period,
                 "seconds_left": round(left, 1)}
 
-    def pass_png(self, headers) -> bytes:
+    def pass_png(self, headers, invert: bool = False) -> bytes:
         p = self._my_person(headers)
         if p is None:
             raise ApiError(404, "no pass")
         from .access import codes
         payload, _ = self._issue().current_pass(p, self.app.access.verifier.period)
-        return codes.qr_png(payload, module_px=14)
+        return codes.qr_png(payload, module_px=14, invert=invert)
 
     # --- access (404 unless access_enabled and started) -------------------------
 
@@ -401,6 +414,17 @@ class Api:
         log.info("access: static signing key rotated; every earlier static code is invalid")
         return {"key_version": v}
 
+    def access_confirm_setup(self) -> dict:
+        import socket
+        acc = self._access()
+        return {"hostname": socket.gethostname(), "port": 8099,
+                "token": acc.codes.confirm_token(), "ttl_s": 30}
+
+    def access_confirm_rotate(self) -> dict:
+        self._access().codes.rotate_confirm_token()
+        log.info("access: confirm token rotated (update Home Assistant's secrets.yaml)")
+        return self.access_confirm_setup()
+
     def access_clear_lockout(self, sid: str) -> dict:
         self._scanner(sid)
         self._access().verifier.clear_lockout(sid)
@@ -465,13 +489,15 @@ ROUTES = [
     ("POST", r"/api/access/static/(?P<code_id>[A-Z2-7]{8})/revoke", "access_static_revoke"),
     ("POST", r"/api/access/static/revoke_all", "access_static_revoke_all"),
     ("POST", r"/api/access/rotate_key", "access_rotate_key"),
+    ("GET", r"/api/access/confirm_setup", "access_confirm_setup"),
+    ("POST", r"/api/access/confirm_setup/rotate", "access_confirm_rotate"),
 ]
 # The only routes a signed-in non-admin may use (the page itself, "/", has no data).
 # Every other route is admin-only: a new route is admin-only unless added here.
 NON_ADMIN_ROUTES = ("whoami", "pass_info", "pass_png")
 NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_clear_lockout",
            "access_person_reenrol", "access_static_revoke", "access_static_revoke_all",
-           "access_rotate_key")
+           "access_rotate_key", "access_confirm_rotate")
 
 
 def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
@@ -513,11 +539,38 @@ def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
                 raise ApiError(400, "expected a JSON object")
             return body
 
+        def _confirm(self, event_id: str):
+            """POST /api/confirm/<event_id> from Home Assistant (rest_command)."""
+            acc = api.app.access
+            if acc is None:
+                return self._json(404, {"error": "not found"})
+            auth = self.headers.get("Authorization") or ""
+            token = acc.codes.confirm_token()
+            if not hmac.compare_digest(auth.encode(), f"Bearer {token}".encode()):
+                log.warning("access: confirm request with a wrong or missing token from %s",
+                            self.client_address[0])
+                return self._json(401, {"confirmed": False, "error": "wrong token"})
+            info = acc.confirm.confirm(event_id)
+            if info is None:
+                log.warning("access: confirm refused: unknown, used or expired event id")
+                return self._json(200, {"confirmed": False})
+            log.info("access [%s]: verified event confirmed to Home Assistant (%s '%s')",
+                     info.get("scanner"), info.get("code_type"), info.get("label"))
+            return self._json(200, {"confirmed": True, **info})
+
         def _dispatch(self, method: str):
-            if not allow_all and self.client_address[0] not in INGRESS_IPS:
-                return self._send(403, b"forbidden", "text/plain")
             url = urlparse(self.path)
             path, query = url.path, parse_qs(url.query)
+            ip = self.client_address[0]
+            m = CONFIRM_RE.fullmatch(path)
+            if m and method == "POST" and (allow_all or ip in CONFIRM_IPS):
+                try:
+                    return self._confirm(m.group(1))
+                except Exception:       # noqa: BLE001 - fail closed
+                    log.exception("confirm request failed")
+                    return self._json(500, {"confirmed": False})
+            if not allow_all and ip not in INGRESS_IPS:
+                return self._send(403, b"forbidden", "text/plain")
             if method == "GET" and path in ("/", "/index.html"):
                 with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
@@ -555,7 +608,8 @@ def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
                 if name in ("whoami", "pass_info"):
                     return self._json(200, getattr(api, name)(self.headers))
                 if name == "pass_png":
-                    return self._send(200, api.pass_png(self.headers), "image/png")
+                    inv = (query.get("invert") or ["0"])[0] == "1"
+                    return self._send(200, api.pass_png(self.headers, inv), "image/png")
                 if name == "access_static_png":
                     return self._send(200, api.access_static_png(kw["code_id"]), "image/png")
                 if name in ("access_image", "access_frame"):

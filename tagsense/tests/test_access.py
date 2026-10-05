@@ -632,3 +632,88 @@ def test_admin_clear_lockout(tmp_path):
     assert api.access_status()["scanners"][0]["locked_until"]
     api.access_clear_lockout(sid)
     assert api.access_status()["scanners"][0]["locked_until"] is None
+
+
+# --- confirm-back --------------------------------------------------------------------
+
+def test_confirm_book_once_and_expiry():
+    from app.access.confirm import CONFIRM_TTL_S, ConfirmBook
+    now = [100.0]
+    book = ConfirmBook(clock=lambda: now[0])
+    eid = book.issue({"label": "Luke"})
+    assert len(eid) >= 22 and book.confirm(eid) == {"label": "Luke"}
+    assert book.confirm(eid) is None                      # once only
+    late = book.issue({"label": "Sam"})
+    now[0] += CONFIRM_TTL_S + 1
+    assert book.confirm(late) is None                     # expired
+    assert book.confirm("not-an-id-at-all-xx") is None
+
+
+def test_verified_event_carries_a_confirmable_id(tmp_path):
+    from app.access.confirm import ConfirmBook
+    s, m = scanner(tmp_path, [qr_frame()])
+    s.confirm = ConfirmBook()
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["event_id"]
+    assert s.confirm.confirm(ev["event_id"])["label"] == "Plumber"
+    s.stop_event.set()
+
+
+def test_confirm_http_route(tmp_path, monkeypatch):
+    import urllib.request
+    from app import web
+    app, api = admin_app(tmp_path)
+    eid = app.access.confirm.issue({"label": "Luke", "code_type": "rotating", "code_id": "ABCD",
+                                    "scanner": "door"})
+    token = app.access.codes.confirm_token()
+
+    def post(path, auth=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", method="POST",
+                                     data=b"", headers={"Authorization": auth} if auth else {})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            return e.code, json.loads(body) if body.startswith(b"{") else body
+
+    # Not from Home Assistant's address: refused like any non-ingress request.
+    srv = web.start_web(app, 0, allow_all=False)
+    try:
+        assert post(f"/api/confirm/{eid}", f"Bearer {token}")[0] == 403
+    finally:
+        srv.shutdown()
+    monkeypatch.setattr(web, "CONFIRM_IPS", {"127.0.0.1"})
+    srv = web.start_web(app, 0, allow_all=False)
+    try:
+        assert post(f"/api/confirm/{eid}")[0] == 401                       # no token
+        assert post(f"/api/confirm/{eid}", "Bearer wrong")[0] == 401
+        status, body = post(f"/api/confirm/{eid}", f"Bearer {token}")
+        assert status == 200 and body["confirmed"] is True and body["label"] == "Luke"
+        assert post(f"/api/confirm/{eid}", f"Bearer {token}")[1] == {"confirmed": False}   # once
+        # The address alone opens nothing else.
+        assert post("/api/access/rotate_key", f"Bearer {token}")[0] == 403
+        # A rotated token stops the old one.
+        api.access_confirm_rotate()
+        eid2 = app.access.confirm.issue({"label": "Sam"})
+        assert post(f"/api/confirm/{eid2}", f"Bearer {token}")[0] == 401
+    finally:
+        srv.shutdown()
+
+
+def test_confirm_not_reachable_through_ingress(tmp_path):
+    from test_guard import call
+    from app import web
+    app, api = admin_app(tmp_path)
+    eid = app.access.confirm.issue({"label": "Luke"})
+    srv = web.start_web(app, 0, allow_all=True, trust_admin=True)
+    try:
+        # Through the panel (ingress) there is no confirm route and no token.
+        status, _ = call(srv, "POST", f"/api/confirm/{eid}", "u1")
+        assert status == 401
+        assert app.access.confirm.confirm(eid) is not None                # still unused
+    finally:
+        srv.shutdown()

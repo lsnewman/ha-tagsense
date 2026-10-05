@@ -1,7 +1,7 @@
 """The access module's secrets and records in /data/access. Only this module
 touches these files.
 
-  keys.json     the static-code signing key and its version
+  keys.json     the static-code signing key and its version, and the confirm token
   people.json   people with rotating passes (secret, HA user, last step used)
   static.json   issued static codes (label, validity, uses left, revoked)
   state.json    per-scanner failure times and lockouts
@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
 import threading
 from dataclasses import asdict, dataclass, field
 
@@ -98,22 +99,43 @@ class AccessStore:
 
     # --- static signing key ---------------------------------------------------------
 
+    def _keys(self) -> dict:
+        return _read_json(self._path("keys.json"), None) or {}
+
     def static_key(self) -> tuple[str, bytes]:
         """(version, key); created on first use."""
         with self.lock:
-            k = _read_json(self._path("keys.json"), None)
-            if not k:
-                k = {"static": {"v": "A", "key": base64.b64encode(codes.new_secret(32)).decode()}}
+            k = self._keys()
+            if "static" not in k:
+                k["static"] = {"v": "A", "key": base64.b64encode(codes.new_secret(32)).decode()}
                 _write_json(self._path("keys.json"), k)
             return k["static"]["v"], base64.b64decode(k["static"]["key"])
 
     def rotate_static_key(self) -> str:
         with self.lock:
             v, _ = self.static_key()
-            nv = codes.next_version(v)
-            _write_json(self._path("keys.json"), {"static": {
-                "v": nv, "key": base64.b64encode(codes.new_secret(32)).decode()}})
-            return nv
+            k = self._keys()
+            k["static"] = {"v": codes.next_version(v),
+                           "key": base64.b64encode(codes.new_secret(32)).decode()}
+            _write_json(self._path("keys.json"), k)
+            return k["static"]["v"]
+
+    # --- confirm token (Home Assistant asks "did you send this event?") ------------
+
+    def confirm_token(self) -> str:
+        with self.lock:
+            k = self._keys()
+            if "confirm" not in k:
+                k["confirm"] = secrets.token_urlsafe(32)
+                _write_json(self._path("keys.json"), k)
+            return k["confirm"]
+
+    def rotate_confirm_token(self) -> str:
+        with self.lock:
+            k = self._keys()
+            k["confirm"] = secrets.token_urlsafe(32)
+            _write_json(self._path("keys.json"), k)
+            return k["confirm"]
 
     # --- people -------------------------------------------------------------------------
 

@@ -169,6 +169,12 @@ async function showWhoami() {
 // The code is drawn by the server every period, so the phone's clock does not
 // matter. Only the signed-in user's own pass is ever returned.
 let passTimer = null, passTick = null;
+function passInverted() { try { return localStorage.getItem("tagsense-pass-invert") === "1"; } catch (e) { return false; } }
+function setPassInverted(on) {
+  try { localStorage.setItem("tagsense-pass-invert", on ? "1" : "0"); } catch (e) { /* not remembered */ }
+  const img = document.getElementById("pass-img");
+  if (img) { img.src = `api/pass.png?t=${Date.now()}${on ? "&invert=1" : ""}`; img.style.background = on ? "#000" : "#fff"; }
+}
 async function passPage(w) {
   clearTimeout(passTimer); clearInterval(passTick);
   let info;
@@ -188,9 +194,11 @@ async function passPage(w) {
   $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto;text-align:center">
     <h2 style="margin-bottom:4px">${esc(info.label)}</h2>
     <div class="muted small">Ring the doorbell, then hold this up to the camera.</div>
-    <img id="pass-img" alt="Your door pass" src="api/pass.png?t=${Date.now()}"
-      style="width:100%;max-width:440px;margin:14px auto;display:block;background:#fff;border-radius:10px">
+    <img id="pass-img" alt="Your door pass" src="api/pass.png?t=${Date.now()}${passInverted() ? "&invert=1" : ""}"
+      style="width:100%;max-width:440px;margin:14px auto;display:block;background:${passInverted() ? "#000" : "#fff"};border-radius:10px">
     <div class="small"><span id="pass-left"></span></div>
+    <label class="inline small" style="margin-top:8px"><input type="checkbox" ${passInverted() ? "checked" : ""}
+      onchange="setPassInverted(this.checked)"> Invert colours (white on black: may help if the screen glares on camera)</label>
     <div class="hint" style="margin-top:8px">Screen brightness medium-high works best; tilt the phone away from lights.
       The code changes every ${info.period} s and each one works once.</div></div>`;
   let left = info.seconds_left;
@@ -257,8 +265,10 @@ const transferCard = () => `
     <div class="card" style="margin-top:16px"><div class="row"><h3 style="flex:1;margin:0">Export / import</h3>
       <button onclick="toggleTransfer()" id="t-toggle">Show</button></div>
       <div id="transfer" style="display:none">
-        <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install.
-          Importing adds new objects and updates ones with the same id; objects not in the text are kept.</p>
+        <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install
+          (for example between TagSense and TagSense (dev)). It includes each object's last 24 hours of chart history and its
+          learned position. Importing adds new objects and updates ones with the same id; objects not in the text are kept.
+          History is merged without doubling, and the learned position is taken only if the imported one is newer.</p>
         <textarea id="t-export" readonly></textarea>
         <div class="row" style="margin-top:8px"><button onclick="copyExport()">Copy</button>
           <button onclick="downloadExport()">Download</button><span class="muted small" id="t-copied"></span></div>
@@ -296,7 +306,10 @@ async function importObjects() {
   if (!confirm("Import these objects? Objects with the same id are updated (their settings too); new ones are added.")) return;
   try {
     const r = await api("import", { method: "POST", body: { text } });
-    alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.`);
+    const hist = Object.entries(r.history || {}).map(([id, h]) =>
+      `${id}: ${h.checks_added} chart records${h.reference_taken ? ", learned position" : ""}`).join("; ");
+    alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.` +
+      (hist ? `\nHistory merged: ${hist}.` : ""));
     document.getElementById("t-import").value = "";
     transferOpen = false;                   // let the refresh redraw the list with the new objects
     await refresh();
@@ -1031,13 +1044,14 @@ async function accessScan(id, btn) {
 }
 
 // ---------- access: passes and static codes (admin) ---------------------------
-let codesData = null, lastIssued = null;
+let codesData = null, lastIssued = null, confirmData = null, tokenShown = false;
 const fmtWhen = ts => ts ? new Date(ts * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
 async function loadCodes() {
   const box = document.getElementById("acc-codes");
   if (!box) return;
   try { codesData = await api("access/codes"); } catch (e) { box.innerHTML = `<div class="card notice alert">${esc(e.message)}</div>`; return; }
-  box.innerHTML = passesCard() + staticCard();
+  try { confirmData = await api("access/confirm_setup"); } catch (e) { confirmData = null; }
+  box.innerHTML = passesCard() + staticCard() + confirmCard();
 }
 function passesCard() {
   const d = codesData, people = d.people;
@@ -1086,6 +1100,44 @@ function staticCard() {
       <button class="small danger" onclick="revokeAll()">Revoke all static codes</button>
       <button class="small danger" onclick="rotateKey()">Rotate signing key</button>
       <span class="muted small">Key version ${esc(d.key_version)}</span></div></div>`;
+}
+function confirmCard() {
+  if (!confirmData) return "";
+  const d = confirmData, tok = tokenShown ? d.token : "•".repeat(12);
+  const url = `http://${d.hostname}:${d.port}/api/confirm/{{ event_id }}`;
+  const yaml = `# configuration.yaml
+rest_command:
+  tagsense_confirm:
+    url: "${url}"
+    method: POST
+    headers:
+      authorization: !secret tagsense_confirm
+    timeout: 5
+
+# secrets.yaml
+tagsense_confirm: "Bearer ${tok}"`;
+  const auto = `# in the automation, before anything that matters (e.g. unlocking):
+- action: rest_command.tagsense_confirm
+  data:
+    event_id: "{{ trigger.to_state.attributes.event_id }}"
+  response_variable: confirm
+- condition: template
+  value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"`;
+  return `<div class="card" style="margin-bottom:16px"><h3>Confirm events (recommended before unlocking)</h3>
+    <p class="muted small">MQTT cannot stop another app or device on your broker from sending a fake <b>verified</b> event
+      (the Home Assistant Mosquitto app does not enforce ACLs). For anything that matters, have the automation ask TagSense to confirm the event first:
+      TagSense says yes once per event, within ${d.ttl_s} s, and only to Home Assistant with this token.</p>
+    <textarea readonly style="min-height:200px;font-family:monospace">${esc(yaml)}</textarea>
+    <textarea readonly style="min-height:130px;font-family:monospace;margin-top:8px">${esc(auto)}</textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="small" onclick="tokenShown=!tokenShown;loadCodes()">${tokenShown ? "Hide token" : "Show token"}</button>
+      <button class="small" onclick="navigator.clipboard.writeText('Bearer ' + confirmData.token)">Copy token</button>
+      <button class="small danger" onclick="rotateConfirm()">Rotate token</button></div>
+    <div class="hint">Restart Home Assistant (or reload REST commands) after adding the rest_command. Rotating the token means updating secrets.yaml.</div></div>`;
+}
+async function rotateConfirm() {
+  if (!confirm("Rotate the confirm token? Automations stop confirming until secrets.yaml is updated.")) return;
+  codesAction(() => api("access/confirm_setup/rotate", { method: "POST" }));
 }
 function codeMessage(r) {
   const parts = [];

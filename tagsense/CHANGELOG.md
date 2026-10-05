@@ -28,9 +28,19 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   - Scanners (e.g. the doorbell) have their own source, scan area, scan
     window and capture mode (*auto*: HA camera snapshots until the go2rtc
     stream runs).
-  - Needs its own MQTT login (`access_mqtt_username`/`access_mqtt_password`)
-    and a broker ACL (see the docs). The bin sensor does not load any of it
-    while it is off.
+  - Needs its own MQTT login (`access_mqtt_username`/`access_mqtt_password`).
+    The bin sensor does not load any of it while it is off.
+  - **Confirming events:** each `verified` event carries a one-time
+    `event_id`. Before unlocking, an automation can ask TagSense, through a
+    `rest_command` with a token, to confirm it: once, within 30 s. This is
+    needed because the Home Assistant Mosquitto app does not enforce ACLs, so
+    any MQTT client could publish a fake event (tested).
+- **Object history in export/import:** the export now includes each object's
+  last 24 hours of chart history and its learned position. Importing merges the
+  history without doubling (so moving between TagSense and TagSense (dev) and
+  back is safe), and takes the learned position only if it is newer.
+- **My pass: Invert colours**, white on black, which may help if the phone
+  screen glares on camera.
 - **The TagSense panel is now visible to every Home Assistant user**, but only
   admins get past the *My pass* page; everyone else sees only their own pass.
   Admin status comes from Home Assistant (new dependency `websocket-client`),

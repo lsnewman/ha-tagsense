@@ -14,6 +14,7 @@ from .config import ScannerConfig, ScannerStore, parse_scanner, validate_scanner
 from .mqtt import AccessMqtt
 from .scanner import Scanner
 from .store import AccessStore
+from .confirm import ConfirmBook
 from .verifier import Verifier
 
 log = logging.getLogger("tagsense.access")
@@ -76,6 +77,7 @@ class AccessManager:
         self.capture_factory = capture_factory        # tests: a fake video capture
         self.codes = AccessStore(self.dir)             # keys, people, static codes, lockouts
         self.verifier = Verifier(self.codes)
+        self.confirm = ConfirmBook()
         self.store = ScannerStore(self.dir)
         self.configs = self.store.load()
         self.lock = threading.RLock()
@@ -90,7 +92,8 @@ class AccessManager:
         extra = {"capture_factory": self.capture_factory} if self.capture_factory else {}
         self.scanners = {c.id: Scanner(c, self.source_factory(c, self.opts), self.mqtt, self.dir,
                                        self.stop_event, verifier=self.verifier,
-                                       snapshot_source=self.snapshot_factory(c, self.opts), **extra)
+                                       snapshot_source=self.snapshot_factory(c, self.opts),
+                                       confirm=self.confirm, **extra)
                          for c in self.configs}
 
     def start(self):

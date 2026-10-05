@@ -137,14 +137,17 @@ def parse(text: str) -> Rotating | Static | None:
 
 # --- QR image ----------------------------------------------------------------------
 
-def qr_png(payload: str, module_px: int = 12) -> bytes:
+def qr_png(payload: str, module_px: int = 12, invert: bool = False) -> bytes:
     """PNG of the code: error correction M, at least a 4-module quiet zone, large
-    modules, so it survives being sent on as a picture."""
+    modules, so it survives being sent on as a picture. `invert` draws it white on
+    black (a mostly dark screen gives off less light, so less glare bleed)."""
     params = cv2.QRCodeEncoder_Params()
     params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_M
     q = cv2.QRCodeEncoder.create(params).encode(payload)
     q = cv2.copyMakeBorder(q, 2, 2, 2, 2, cv2.BORDER_CONSTANT, value=255)
     img = cv2.resize(q, None, fx=module_px, fy=module_px, interpolation=cv2.INTER_NEAREST)
+    if invert:
+        img = 255 - img
     ok, buf = cv2.imencode(".png", img)
     return buf.tobytes()
 

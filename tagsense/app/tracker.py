@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 import numpy as np
@@ -170,7 +170,7 @@ class TrackedObject:
         """Forget the learned usual position and size (the object has moved).
         The size gate and geometry warnings stay off until MIN_HITS new hits."""
         with self.cond:
-            self.reference = Reference()        # also forgets 0 deg: set again by the next hit
+            self.reference = Reference(updated=time.time())   # also forgets 0 deg
             self.reference.save(self.reference_path)
             self.rotation = self.rotation_angle = None
             self.decision.reject_streak = 0
@@ -498,6 +498,30 @@ class TrackedObject:
                 "has_image": self.last_jpeg is not None,
                 "has_phantom_image": self.last_phantom_jpeg is not None,
             }
+
+    # --- history for export/import (between installs, e.g. dev and main) ----------
+
+    def export_history(self) -> dict:
+        with self.cond:
+            return {"checks": self.checklog.points(), "reference": asdict(self.reference)}
+
+    def import_history(self, h: dict) -> dict:
+        """Merge another install's history: chart records by time (no doubles), and
+        the learned position / 0 deg only if the imported copy is newer."""
+        added, ref_taken = 0, False
+        with self.cond:
+            if isinstance(h.get("checks"), list):
+                added = self.checklog.merge(h["checks"])
+            raw = h.get("reference")
+            if isinstance(raw, dict):
+                other = Reference(**{k: raw[k] for k in Reference.__dataclass_fields__ if k in raw})
+                if other.updated > self.reference.updated:
+                    self.reference = other
+                    self.reference.save(self.reference_path)
+                    ref_taken = True
+        log.info("[%s] history imported: %d chart records added, learned position %s",
+                 self.id, added, "taken (newer)" if ref_taken else "kept (local is newer)")
+        return {"checks_added": added, "reference_taken": ref_taken}
 
     def history_list(self) -> list[dict]:
         with self.cond:
