@@ -24,6 +24,13 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   `access_enabled` and needs its own MQTT login (`access_mqtt_username` /
   `access_mqtt_password`) plus a broker ACL (see the docs). The bin sensor
   does not load or touch any of it while it is off.
+- **Faster scanning from go2rtc.** A scan holds the camera's video stream
+  open and checks the newest frame continuously, instead of requesting one
+  JPEG at a time (about 6 s per frame on a 5 MP Reolink; now about 6 s to
+  start, then about 7 frames per second). The scanner card and the log show
+  each scan's timing. A per-scanner *Frame capture* setting can switch to
+  single snapshots, and a failed stream falls back to snapshots.
+- `go2rtc_url` without `http://` now works (it is added).
 - New `app/sweep.py` (development): per-family decode margin on synthetic
   frames and on real frames with the tag swapped in, phantom counts, and a
   one-at-a-time ablation of the tuned detector parameters. The results and

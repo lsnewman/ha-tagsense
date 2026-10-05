@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import requests
 
@@ -22,16 +23,24 @@ class Frame:
     fetch_ms: float
 
 
+def http_base(url: str) -> str:
+    """go2rtc base URL; "host:1984" (no scheme) is taken as http://host:1984."""
+    url = url.strip().rstrip("/")
+    return url if "://" in url else f"http://{url}"
+
+
 class Source:
     name = "source"
+    timeout = TIMEOUT_S
+    stream_url: str | None = None     # a continuous video stream, if the source has one
 
     def __init__(self, session: requests.Session | None = None):
         self._session = session or requests.Session()
 
-    def _get(self, url: str, **kw) -> Frame:
+    def _get(self, url: str, timeout: float | None = None, **kw) -> Frame:
         t0 = time.perf_counter()
         try:
-            r = self._session.get(url, timeout=TIMEOUT_S, **kw)
+            r = self._session.get(url, timeout=timeout or self.timeout, **kw)
             r.raise_for_status()
         except requests.RequestException as e:
             raise FetchError(f"{self.name}: {e}") from e
@@ -39,7 +48,7 @@ class Source:
             raise FetchError(f"{self.name}: empty response")
         return Frame(r.content, self.name, (time.perf_counter() - t0) * 1000.0)
 
-    def fetch(self) -> Frame:
+    def fetch(self, timeout: float | None = None) -> Frame:
         raise NotImplementedError
 
 
@@ -52,11 +61,14 @@ class Go2rtcSource(Source):
             raise ValueError("go2rtc_url is not set")
         if not stream:
             raise ValueError("go2rtc_stream is not set")
-        self.url = base_url.rstrip("/") + "/api/frame.jpeg"
+        base = http_base(base_url)
+        self.url = base + "/api/frame.jpeg"
         self.stream = stream
+        # fMP4 over HTTP: go2rtc passes the H.264/H.265 through without converting it.
+        self.stream_url = f"{base}/api/stream.mp4?src={quote(stream, safe='')}"
 
-    def fetch(self) -> Frame:
-        return self._get(self.url, params={"src": self.stream})
+    def fetch(self, timeout: float | None = None) -> Frame:
+        return self._get(self.url, timeout, params={"src": self.stream})
 
 
 class HaCameraSource(Source):
@@ -69,21 +81,25 @@ class HaCameraSource(Source):
         self.url = f"{SUPERVISOR_URL}/core/api/camera_proxy/{entity_id}"
         self.token = token or os.environ.get("SUPERVISOR_TOKEN", "")
 
-    def fetch(self) -> Frame:
-        return self._get(self.url, headers={"Authorization": f"Bearer {self.token}"})
+    def fetch(self, timeout: float | None = None) -> Frame:
+        return self._get(self.url, timeout, headers={"Authorization": f"Bearer {self.token}"})
 
 
 class FallbackSource(Source):
     def __init__(self, primary: Source, fallback: Source):
         self.primary, self.fallback = primary, fallback
         self.name = f"{primary.name}+{fallback.name}"
+        self.stream_url = primary.stream_url
 
-    def fetch(self) -> Frame:
+    def set_timeout(self, seconds: float):
+        self.primary.timeout = self.fallback.timeout = seconds
+
+    def fetch(self, timeout: float | None = None) -> Frame:
         try:
-            return self.primary.fetch()
+            return self.primary.fetch(timeout)
         except FetchError as e1:
             try:
-                return self.fallback.fetch()
+                return self.fallback.fetch(timeout)
             except FetchError as e2:
                 raise FetchError(f"{e1}; {e2}") from e2
 
@@ -108,7 +124,7 @@ def build_source(opts: dict) -> Source:
 def list_go2rtc_streams(base_url: str, timeout: float = 5) -> list[str]:
     if not base_url:
         return []
-    r = requests.get(base_url.rstrip("/") + "/api/streams", timeout=timeout)
+    r = requests.get(http_base(base_url) + "/api/streams", timeout=timeout)
     r.raise_for_status()
     return sorted(r.json().keys())
 

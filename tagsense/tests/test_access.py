@@ -92,7 +92,7 @@ class SeqSource:
     def __init__(self, frames):
         self.frames, self.i = [jpeg(f) for f in frames], 0
 
-    def fetch(self):
+    def fetch(self, timeout=None):
         data = self.frames[min(self.i, len(self.frames) - 1)]
         self.i += 1
         return Frame(data, "fake", 1.0)
@@ -113,6 +113,11 @@ def wait_for(cond, timeout=10):
             return True
         time.sleep(0.02)
     return False
+
+
+def done(s, m):
+    """The window has closed and its event is out."""
+    return lambda: events(m) and not s.scanning
 
 
 def events(m):
@@ -145,7 +150,7 @@ def test_scan_reports_code_without_its_content(tmp_path, caplog):
     s, m = scanner(tmp_path, [qr_frame(None), qr_frame()])
     s.thread.start()
     s.scan()
-    assert wait_for(lambda: events(m))
+    assert wait_for(done(s, m))
     ev = events(m)[0]
     assert ev["event_type"] == "qr_seen" and ev["fingerprint"] == fingerprint(PAYLOAD)
     assert ev["length"] == len(PAYLOAD) and ev["frames"] == 2
@@ -156,7 +161,6 @@ def test_scan_reports_code_without_its_content(tmp_path, caplog):
     assert QrDecoder().decode(img) is None
     # Events and images are never retained; the window closes after the read.
     assert all(not r for t, _, r in m.client.published if t.endswith(("/event", "/image")))
-    assert wait_for(lambda: not s.scanning)
     s.stop_event.set()
 
 
@@ -164,7 +168,7 @@ def test_scan_times_out_when_no_code(tmp_path):
     s, m = scanner(tmp_path, [qr_frame(None)], window_s=0.5, frame_interval_s=0.05)
     s.thread.start()
     s.scan()
-    assert wait_for(lambda: events(m))
+    assert wait_for(done(s, m))
     ev = events(m)[0]
     assert ev["event_type"] == "scan_timeout" and ev["frames"] >= 2
     scanning = [p for t, p, _ in m.client.published if t.endswith("/scanning")]
@@ -184,13 +188,13 @@ def test_fetch_failures_end_in_timeout_not_a_read(tmp_path):
     class Broken:
         name = "fake"
 
-        def fetch(self):
+        def fetch(self, timeout=None):
             raise FetchError("down")
     s, m = scanner(tmp_path, [], window_s=0.3)
     s.source = Broken()
     s.thread.start()
     s.scan()
-    assert wait_for(lambda: events(m), timeout=5)
+    assert wait_for(done(s, m), timeout=5)
     assert events(m)[0]["event_type"] == "scan_timeout" and events(m)[0]["fetch_failures"] >= 1
     s.stop_event.set()
 
@@ -307,3 +311,101 @@ def test_panel_manages_scanners_and_scans(tmp_path):
     assert any(t.endswith("front_door_code/config") for t in cleared)
     assert (Path(acc.dir).stat().st_mode & 0o777) == 0o700
     acc.stop()
+
+
+# --- stream capture --------------------------------------------------------------------
+
+class FakeCapture:
+    """Stands in for cv2.VideoCapture: yields frames at a steady rate."""
+
+    def __init__(self, frames, opened=True, delay=0.01):
+        self.frames, self.opened, self.delay, self.i = frames, opened, delay, 0
+
+    def isOpened(self):
+        return self.opened
+
+    def read(self):
+        time.sleep(self.delay)
+        if self.i >= len(self.frames):
+            return False, None
+        self.i += 1
+        return True, self.frames[self.i - 1]
+
+    def release(self):
+        pass
+
+
+class StreamSource(SeqSource):
+    stream_url = "http://go2rtc/api/stream.mp4?src=door"
+
+
+def stream_scanner(tmp_path, cap, snapshot_frames, **cfg):
+    s, m = scanner(tmp_path, snapshot_frames, **cfg)
+    s.source = StreamSource(snapshot_frames)
+    s.capture_factory = lambda url: cap
+    return s, m
+
+
+def test_stream_capture_reads_code_without_snapshots(tmp_path):
+    frames = [qr_frame(None)] * 20 + [qr_frame()] * 30
+    s, m = stream_scanner(tmp_path, FakeCapture(frames), [qr_frame(None)], window_s=5)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "qr_seen" and ev["capture"] == "stream"
+    assert ev["frames_decoded"] >= ev["frames"] and "first_frame_s" in ev
+    assert s.source.i == 0                      # no single-JPEG fetches at all
+    assert s.last_stats["result"] == "read" and s.stream is None
+    s.stop_event.set()
+
+
+def test_stream_that_fails_falls_back_to_snapshots(tmp_path):
+    s, m = stream_scanner(tmp_path, FakeCapture([], opened=False), [qr_frame(None), qr_frame()],
+                          window_s=5)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "qr_seen" and ev["capture"] == "stream failed, snapshots"
+    assert "could not open" in ev["stream_error"] and s.source.i == 2
+    s.stop_event.set()
+
+
+def test_snapshot_mode_never_opens_a_stream(tmp_path):
+    opened = []
+    s, m = stream_scanner(tmp_path, None, [qr_frame()], capture="snapshot")
+    s.capture_factory = lambda url: opened.append(url)
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m))
+    assert events(m)[0]["capture"] == "snapshot" and opened == []
+    s.stop_event.set()
+
+
+def test_real_video_file_through_ffmpeg(tmp_path):
+    """The real OpenCV/FFmpeg path: an MP4 whose code appears part-way through."""
+    path = str(tmp_path / "door.mp4")
+    w = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (1280, 720))
+    if not w.isOpened():
+        pytest.skip("no mp4 writer in this OpenCV build")
+    for i in range(40):
+        w.write(qr_frame(None if i < 15 else PAYLOAD, module_px=6, seed=i))
+    w.release()
+
+    class FileSource(SeqSource):
+        stream_url = path
+    s, m = scanner(tmp_path, [qr_frame(None)], window_s=10)
+    s.source = FileSource([qr_frame(None)])
+    s.thread.start()
+    s.scan()
+    assert wait_for(done(s, m), timeout=15)
+    assert events(m)[0]["event_type"] == "qr_seen" and events(m)[0]["capture"] == "stream"
+    s.stop_event.set()
+
+
+def test_go2rtc_url_without_scheme_and_stream_url():
+    from app.sources import Go2rtcSource
+    src = Go2rtcSource("frigate-host:1984/", "front door")
+    assert src.url == "http://frigate-host:1984/api/frame.jpeg"
+    assert src.stream_url == "http://frigate-host:1984/api/stream.mp4?src=front%20door"

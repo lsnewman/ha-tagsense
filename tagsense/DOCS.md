@@ -276,6 +276,18 @@ automation:
           entity_id: button.tagsense_access_front_door_scan
 ```
 
+**Frame capture:** for a go2rtc camera, a scan holds the camera's video
+stream open (go2rtc's `stream.mp4`) and checks the newest frame again and
+again. Requesting single JPEGs instead (go2rtc's `frame.jpeg`) can take
+several seconds per frame, because go2rtc has to wait for a keyframe and
+convert it each time. On a 5 MP Reolink, single JPEGs took about 6 s each;
+the stream took about 6 s to start, then about 7 full-resolution frames a
+second were checked. The start is faster (1-3 s) when something, such as
+Frigate, already has the stream running. The scanner card shows the timing of
+the last scan. *Frame capture* in the scanner settings switches to single
+snapshots, and a scan falls back to snapshots by itself if the stream fails.
+Home Assistant cameras always use snapshots.
+
 **Reading distance:** the code has to be large in the frame, about 100 px
 across, or 4-5 px per QR module. Synthetic tests read it reliably at that
 size, plain, blurred and dim. **Screen glare is the main problem**: ask

@@ -21,10 +21,18 @@ class AccessError(Exception):
     """The access module cannot start; the bin sensor is unaffected."""
 
 
+SNAPSHOT_TIMEOUT_S = 30     # some cameras take 20 s to produce a single JPEG
+
+
 def make_source(cfg: ScannerConfig, opts: dict):
-    return build_source({"source": cfg.source, "fallback_source": cfg.fallback_source or "none",
-                         "go2rtc_url": opts.get("go2rtc_url", ""),
-                         "go2rtc_stream": cfg.go2rtc_stream, "camera_entity": cfg.camera_entity})
+    src = build_source({"source": cfg.source, "fallback_source": cfg.fallback_source or "none",
+                        "go2rtc_url": opts.get("go2rtc_url", ""),
+                        "go2rtc_stream": cfg.go2rtc_stream, "camera_entity": cfg.camera_entity})
+    if hasattr(src, "set_timeout"):
+        src.set_timeout(SNAPSHOT_TIMEOUT_S)
+    else:
+        src.timeout = SNAPSHOT_TIMEOUT_S
+    return src
 
 
 def access_mqtt_config(opts: dict) -> MqttConfig:

@@ -917,6 +917,7 @@ function scannerCard(sc) {
     <div class="row"><h2 style="flex:1">${esc(sc.name)}</h2>
       ${sc.scanning ? `<span class="chip present">scanning</span>` : `<span class="chip absent">idle</span>`}</div>
     <div class="muted small">${esc(src)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
+    ${sc.last_stats ? `<div class="hint">Last scan ${ago(sc.last_stats.at)}: ${esc(statsText(sc.last_stats))}</div>` : ""}
     ${sc.last_error ? `<div class="hint">Last fetch error: ${esc(sc.last_error)}</div>` : ""}
     <div class="row" style="margin-top:8px">
       <button class="primary" onclick="accessScan('${sc.id}', this)" ${sc.scanning ? "disabled" : ""}>Scan now</button>
@@ -938,6 +939,15 @@ function scannerCard(sc) {
           : `<div class="muted small">None since the app started.</div>`}</div>
     </div></div>`;
 }
+function statsText(st) {
+  const parts = [st.capture === "stream" ? "video stream" : st.capture === "snapshot" ? "snapshots" : st.capture];
+  if (st.first_frame_s !== undefined) parts.push(`first frame after ${st.first_frame_s} s`);
+  parts.push(`${st.frames} frame${st.frames === 1 ? "" : "s"} checked` + (st.checked_per_s ? ` (${st.checked_per_s}/s)` : ""));
+  if (st.fetch_ms) parts.push(`${(st.fetch_ms / 1000).toFixed(1)} s per snapshot`);
+  if (st.resolution) parts.push(st.resolution);
+  if (st.stream_error) parts.push(`stream error: ${st.stream_error}`);
+  return parts.join(" · ");
+}
 async function accessScan(id, btn) {
   btn.disabled = true;
   try { await api(`access/scanners/${id}/scan`, { method: "POST" }); } catch (e) { alert(e.message); }
@@ -956,7 +966,8 @@ async function scannerForm(id) {
   if (!access) { try { access = await api("access"); } catch (e) { location.hash = "#/access"; return; } }
   const o = id ? access.scanners.find(s => s.id === id) : null;
   const v = o || { name: "", source: "go2rtc", go2rtc_stream: "", camera_entity: "", fallback: false,
-    crop_x1: 0, crop_y1: 0, crop_x2: 1, crop_y2: 1, window_s: 20, frame_interval_s: 0.3, debug_frames: false };
+    crop_x1: 0, crop_y1: 0, crop_x2: 1, crop_y2: 1, window_s: 20, frame_interval_s: 0.3, debug_frames: false,
+    capture: "stream" };
   const num = (k, label, min, max, step) => `<div><label for="sf-${k}">${label}</label>
     <input id="sf-${k}" type="number" min="${min}" max="${max}" step="${step}" value="${v[k]}" style="max-width:110px"></div>`;
   $main.innerHTML = `<div class="${o ? "cols" : ""}"><div class="card" style="max-width:600px">
@@ -976,7 +987,13 @@ async function scannerForm(id) {
       <input id="sf-entity" list="sf-entities" value="${esc(v.camera_entity)}" placeholder="camera.doorbell"><datalist id="sf-entities"></datalist>
       <label class="inline"><input type="checkbox" id="sf-fallback" ${v.fallback ? "checked" : ""}> If this camera fails, try the other source</label>
       ${o ? "" : `<div class="hint" style="margin-top:10px">After adding the scanner you can draw its scan area on a live frame.</div>`}
-      <div class="row">${num("window_s", "Scan window (s)", 5, 120, 1)}${num("frame_interval_s", "Pause between frames (s)", 0, 5, 0.1)}</div>
+      <label for="sf-capture">Frame capture</label>
+      <select id="sf-capture">
+        <option value="stream" ${v.capture !== "snapshot" ? "selected" : ""}>Video stream (recommended for go2rtc)</option>
+        <option value="snapshot" ${v.capture === "snapshot" ? "selected" : ""}>Single snapshots</option></select>
+      <div class="hint">Video stream holds the go2rtc stream open during a scan: one start-up delay, then several frames a second.
+        Single snapshots fetch one image at a time, which can take seconds each on some cameras. Home Assistant cameras always use snapshots.</div>
+      <div class="row">${num("window_s", "Scan window (s)", 5, 120, 1)}${num("frame_interval_s", "Pause between snapshots (s)", 0, 5, 0.1)}</div>
       <label class="inline"><input type="checkbox" id="sf-debug" ${v.debug_frames ? "checked" : ""}> Keep raw scan frames for testing (last 50, deleted after 24 h)</label>
       <div class="hint">Raw frames can contain readable codes: leave this off except while testing.</div>
       <div id="sf-error" class="notice alert" style="white-space:pre-wrap;display:none;margin-top:10px"></div>
@@ -1003,7 +1020,8 @@ async function scannerForm(id) {
     const val = k => document.getElementById("sf-" + k).value;
     const body = { name: val("name").trim(), source: document.querySelector("input[name=sf-src]:checked").value,
       go2rtc_stream: val("stream").trim(), camera_entity: val("entity").trim(),
-      fallback: document.getElementById("sf-fallback").checked, debug_frames: document.getElementById("sf-debug").checked };
+      fallback: document.getElementById("sf-fallback").checked, debug_frames: document.getElementById("sf-debug").checked,
+      capture: val("capture") };
     for (const k of ["window_s", "frame_interval_s"]) body[k] = +val(k);
     if (!o) body.id = val("id").trim();
     try {

@@ -315,6 +315,30 @@ path to any lock.
   - Raw frames are kept only with the per-scanner `debug_frames` setting:
     the last 50, deleted after 24 h, in `/data/access/debug/`.
 
+### Frame capture
+
+go2rtc's `api/frame.jpeg` converts on every request: it waits for the next
+keyframe, then decodes it to JPEG (in ffmpeg). Measured on 2026-10-05 against
+the development go2rtc, with a 5 MP Reolink RLC-510WA (2560x1920, H.264, pulled
+by go2rtc over HTTP-FLV, on Wi-Fi):
+
+| Method | First frame | After that |
+|---|---|---|
+| `frame.jpeg` | 5-6 s | 5-6 s every frame (about 20 s through the panel) |
+| `api/stream.mp4` held open (cold: nobody watching) | 6-8 s | about 20 decoded/s, about 7 checked/s at full frame |
+| the same, warm (stream already running, e.g. in Frigate) | 1.3-3.0 s | same |
+| `rtsp://<host>:8554/<stream>` | 404 from this go2rtc; not pursued | |
+
+So a scan holds the stream open (`app/access/stream.py`): a reader thread
+decodes continuously (OpenCV's bundled FFmpeg) and keeps only the newest
+frame, and the scan loop checks the newest frame each time. The backlog is
+never processed. The cold start is the FLV source starting in go2rtc plus the
+keyframe wait; the warm start is the keyframe wait alone. Checking at about
+7/s is limited by the QR decode on a whole 5 MP frame, so a tighter scan area
+checks more often. If the stream does not open or ends, the rest of the
+window uses snapshots, and a snapshot fetch never runs more than 2 s past the
+end of the window. HA cameras always use snapshots (camera_proxy).
+
 ### QR reading: measurements
 
 `python -m app.sweep --qr` uses synthetic 1280x720 frames with a tilted

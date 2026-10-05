@@ -1,9 +1,15 @@
 """One scanner: a thread that scans for a QR code during a short window.
 
 A Scan press opens a window of `window_s` seconds (a press during an open
-window extends it). Frames are fetched back to back, `frame_interval_s` apart,
-and each is decoded in the scanner's crop. The window ends at the first code
-read, or with a scan_timeout event. There is no continuous scanning.
+window extends it). The window ends at the first code read, or with a
+scan_timeout event. There is no continuous scanning.
+
+Frames come from one of two capture modes:
+- stream (default for go2rtc): the camera's video is held open for the window
+  and the newest decoded frame is checked each time (stream.py). One start-up
+  delay per window, then frames as fast as they can be checked.
+- snapshot: single JPEGs, `frame_interval_s` apart. Used for HA cameras, when
+  chosen, and for the rest of a window whose stream failed.
 
 The payload text never leaves this module: events carry its length and a
 short fingerprint, logs the same, and images have the code blacked out.
@@ -25,6 +31,7 @@ from ..sanity import decode_jpeg
 from ..sources import FetchError, Source
 from .config import ScannerConfig
 from .qr import QrDecoder, QrRead, blackout
+from .stream import FrameStream, open_capture
 
 log = logging.getLogger("tagsense.access")
 
@@ -39,7 +46,7 @@ def now_iso() -> str:
 
 class Scanner:
     def __init__(self, cfg: ScannerConfig, source: Source, mqtt, access_dir: str,
-                 stop_event: threading.Event):
+                 stop_event: threading.Event, capture_factory=open_capture):
         self.cfg = cfg
         self.source = source
         self.mqtt = mqtt
@@ -48,6 +55,9 @@ class Scanner:
         self.cond = threading.Condition()
         self.deadline = 0.0             # monotonic end of the open window, 0 = closed
         self.decoder = QrDecoder()
+        self.capture_factory = capture_factory
+        self.stream: FrameStream | None = None      # open only during a stream window
+        self.last_stats: dict | None = None
         self.fetch_lock = threading.Lock()
         # For the panel
         self.events: deque[dict] = deque(maxlen=EVENTS_KEPT)
@@ -85,56 +95,104 @@ class Scanner:
 
     def _window(self):
         self._set_scanning(True)
-        frames = failures = 0
+        t0 = time.monotonic()
+        st = {"capture": "snapshot", "frames": 0, "fetch_failures": 0}
+        fetch_ms: list[float] = []
+        stream = None
+        if self.cfg.capture == "stream" and getattr(self.source, "stream_url", None):
+            st["capture"] = "stream"
+            stream = self.stream = FrameStream(self.source.stream_url, self.id,
+                                               self.capture_factory)
+        seq = 0
         last_img = None
         read: QrRead | None = None
-        while not self.stop_event.is_set():
-            with self.cond:
-                if time.monotonic() >= self.deadline:
+        try:
+            while not self.stop_event.is_set():
+                with self.cond:
+                    left = self.deadline - time.monotonic()
+                if left <= 0:
                     break
-            try:
-                data = self.fetch()
-            except FetchError as e:
-                failures += 1
-                self.last_error = f"{datetime.now().strftime('%H:%M:%S')} {e}"
-                log.warning("access [%s]: fetch failed: %s", self.id, e)
-                self.stop_event.wait(max(self.cfg.frame_interval_s, 1.0))
-                continue
-            img = decode_jpeg(data)
-            if img is None:
-                failures += 1
-                continue
-            frames += 1
-            last_img = img
-            if self.cfg.debug_frames:
-                self._save_debug(data)
-            read = self.decoder.decode(img, self.cfg.crop)
-            if read:
-                break
-            if self.cfg.frame_interval_s:
-                self.stop_event.wait(self.cfg.frame_interval_s)
+                if stream is not None:
+                    img, seq = stream.next_frame(seq, timeout=min(1.0, left))
+                    if img is None:
+                        if stream.ended:            # carry on with snapshots
+                            st["stream_error"] = stream.error
+                            st["capture"] = "stream failed, snapshots"
+                            log.warning("access [%s]: %s; using snapshots for this scan",
+                                        self.id, stream.error)
+                            stream.close()
+                            stream = self.stream = None
+                        continue
+                    if self.cfg.debug_frames:
+                        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                        if ok:
+                            self._save_debug(buf.tobytes())
+                else:
+                    t = time.monotonic()
+                    try:            # never wait much past the end of the window
+                        data = self.fetch(timeout=max(2.0, left))
+                    except FetchError as e:
+                        st["fetch_failures"] += 1
+                        self.last_error = f"{datetime.now().strftime('%H:%M:%S')} {e}"
+                        log.warning("access [%s]: fetch failed: %s", self.id, e)
+                        self.stop_event.wait(max(self.cfg.frame_interval_s, 1.0))
+                        continue
+                    fetch_ms.append((time.monotonic() - t) * 1000)
+                    img = decode_jpeg(data)
+                    if img is None:
+                        st["fetch_failures"] += 1
+                        continue
+                    if self.cfg.debug_frames:
+                        self._save_debug(data)
+                st["frames"] += 1
+                if "first_frame_s" not in st:
+                    st["first_frame_s"] = round(time.monotonic() - t0, 1)
+                last_img = img
+                read = self.decoder.decode(img, self.cfg.crop)
+                if read:
+                    break
+                if stream is None and self.cfg.frame_interval_s:
+                    self.stop_event.wait(self.cfg.frame_interval_s)
+        finally:
+            if stream is not None:
+                st["frames_decoded"] = stream.frames_decoded
+                stream.close()
+                self.stream = None
         with self.cond:
             self.deadline = 0.0
         if self.stop_event.is_set():
             self._set_scanning(False)
             return
+        elapsed = time.monotonic() - t0
+        if last_img is not None:
+            h, w = last_img.shape[:2]
+            st["resolution"] = f"{w}x{h}"
+        if fetch_ms:
+            st["fetch_ms"] = round(sum(fetch_ms) / len(fetch_ms))
+        if st["frames"] > 1 and "first_frame_s" in st:
+            st["checked_per_s"] = round((st["frames"] - 1) / max(elapsed - st["first_frame_s"], 0.1), 1)
+        self.last_stats = {"at": now_iso(), "result": "read" if read else "timeout", **st}
+        log.info("access [%s]: scan %s after %.1f s: capture %s, first frame %s s, %d frames checked"
+                 "%s%s%s", self.id, "read a code" if read else "timed out", elapsed, st["capture"],
+                 st.get("first_frame_s", "-"), st["frames"],
+                 f" ({st['checked_per_s']}/s)" if "checked_per_s" in st else "",
+                 f", {st['frames_decoded']} decoded" if "frames_decoded" in st else "",
+                 f", fetch {st['fetch_ms']} ms" if "fetch_ms" in st else "")
         if read:
-            self._on_read(read, last_img, frames)
+            self._on_read(read, last_img, st)
         else:
-            self._emit("scan_timeout", {"frames": frames, "fetch_failures": failures,
-                                        "window_s": self.cfg.window_s})
             if last_img is not None:
                 self._publish_image(last_img, [])
+            self._emit("scan_timeout", {**st, "window_s": self.cfg.window_s})
         self._set_scanning(False)
 
-    def _on_read(self, read: QrRead, img: np.ndarray, frames: int):
+    def _on_read(self, read: QrRead, img: np.ndarray, st: dict):
         # Stage 2: report that a code was read, without its content.
         log.info("access [%s]: QR read, fingerprint %s, %d chars, %s decoder, %.0f ms, frame %d",
-                 self.id, read.fingerprint, len(read.text), read.decoder, read.ms, frames)
+                 self.id, read.fingerprint, len(read.text), read.decoder, read.ms, st["frames"])
+        self._publish_image(img, [read.quad])      # before the event, so it is current
         self._emit("qr_seen", {"fingerprint": read.fingerprint, "length": len(read.text),
-                               "decoder": read.decoder, "decode_ms": round(read.ms, 1),
-                               "frames": frames})
-        self._publish_image(img, [read.quad])
+                               "decoder": read.decoder, "decode_ms": round(read.ms, 1), **st})
 
     # --- outputs -------------------------------------------------------------------
 
@@ -162,15 +220,18 @@ class Scanner:
 
     # --- frames -------------------------------------------------------------------
 
-    def fetch(self) -> bytes:
+    def fetch(self, timeout: float | None = None) -> bytes:
         with self.fetch_lock:
-            data = self.source.fetch().data
+            data = (self.source.fetch(timeout) if timeout else self.source.fetch()).data
         return data
 
     def grab(self) -> bytes:
-        """A frame for the panel's preview, with any readable QR code blacked out."""
-        data = self.fetch()
-        img = decode_jpeg(data)
+        """A frame for the panel's preview, with any readable QR code blacked out.
+        During a stream scan it is the stream's newest frame (no extra fetch)."""
+        stream = self.stream
+        img = stream.latest() if stream is not None else None
+        if img is None:
+            img = decode_jpeg(self.fetch())
         if img is None:
             raise FetchError("could not decode the frame")
         read = QrDecoder().decode(img)
@@ -204,4 +265,5 @@ class Scanner:
     def status(self) -> dict:
         return {**self.cfg.to_dict(), "scanning": self.scanning, "events": list(self.events),
                 "last_error": self.last_error, "has_image": self.last_jpeg is not None,
-                "debug_frames_saved": len(self.debug_files())}
+                "debug_frames_saved": len(self.debug_files()), "last_stats": self.last_stats,
+                "stream_available": bool(getattr(self.source, "stream_url", None))}
