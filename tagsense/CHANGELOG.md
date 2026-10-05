@@ -35,6 +35,10 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
     `rest_command` with a token, to confirm it: once, within 30 s. This is
     needed because the Home Assistant Mosquitto app does not enforce ACLs, so
     any MQTT client could publish a fake event (tested).
+- **Blueprint: unlock on a confirmed code.** It confirms the event, unlocks,
+  waits until the lock reports unlocked, then locks again after the auto-lock
+  time (fixed, or the lock's own setting). Import it with one click from the
+  docs or the Access page.
 - **Object history in export/import:** the export now includes each object's
   last 24 hours of chart history and its learned position. Importing merges the
   history without doubling (so moving between TagSense and TagSense (dev) and

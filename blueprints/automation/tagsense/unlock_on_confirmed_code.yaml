@@ -1,0 +1,118 @@
+blueprint:
+  name: TagSense - unlock on a confirmed access code
+  description: >-
+    When a TagSense scanner reports a **verified** code, ask TagSense to confirm
+    it (one-time, within 30 s), then unlock. Once the lock reports unlocked,
+    wait the auto-lock time and lock again if it is still unlocked.
+
+
+    **Needs the `rest_command.tagsense_confirm` set up first**: copy it, and the
+    token for `secrets.yaml`, from TagSense → Access → *Confirm events*.
+    Without it the confirm step fails and nothing unlocks.
+
+
+    A fake MQTT event cannot unlock: TagSense only confirms events it really
+    sent, once each.
+  domain: automation
+  source_url: https://github.com/lsnewman/ha-tagsense/blob/main/blueprints/automation/tagsense/unlock_on_confirmed_code.yaml
+  input:
+    code_event:
+      name: TagSense scanner
+      description: The scanner's *Code* event entity (event.tagsense_access_..._code).
+      selector:
+        entity:
+          filter:
+            - domain: event
+              integration: mqtt
+    lock_entity:
+      name: Lock
+      description: The lock to open for a confirmed code.
+      selector:
+        entity:
+          filter:
+            - domain: lock
+    auto_lock_number:
+      name: Auto-lock time from the lock (optional)
+      description: >-
+        A number entity holding the lock's own auto-lock time in seconds (for
+        example `number.front_door_auto_lock_after`). Leave empty to use the
+        fixed time below.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: number
+    auto_lock_seconds:
+      name: Auto-lock after (seconds)
+      description: >-
+        Used when no auto-lock entity is set, or it has no value. 0 = never lock
+        again (leave it to the lock).
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: s
+          mode: box
+    notify:
+      name: Notification
+      description: Show a persistent notification for each confirmed code.
+      default: true
+      selector:
+        boolean:
+
+mode: queued
+max: 5
+
+triggers:
+  - trigger: event.received
+    target:
+      entity_id: !input code_event
+    options:
+      event_type:
+        - verified
+
+variables:
+  lock_entity: !input lock_entity
+  auto_lock_number: !input auto_lock_number
+  auto_lock_seconds: !input auto_lock_seconds
+  notify: !input notify
+  relock_after: >-
+    {% set n = states(auto_lock_number) if auto_lock_number else 'unknown' %}
+    {{ n | int(auto_lock_seconds | int(0)) }}
+
+actions:
+  # 1. Ask TagSense whether it really sent this event (once, within 30 s).
+  - action: rest_command.tagsense_confirm
+    data:
+      event_id: "{{ trigger.to_state.attributes.event_id }}"
+    response_variable: confirm
+  - condition: template
+    value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"
+  - if:
+      - condition: template
+        value_template: "{{ notify }}"
+    then:
+      - action: notify.persistent_notification
+        data:
+          title: Door
+          message: >-
+            {{ confirm.content.label }} verified ({{ confirm.content.code_type }}
+            code), confirmed by TagSense
+  # 2. Unlock, and wait until the lock actually reports unlocked.
+  - action: lock.unlock
+    target:
+      entity_id: "{{ lock_entity }}"
+  - wait_template: "{{ is_state(lock_entity, 'unlocked') }}"
+    timeout: "00:01:00"
+    continue_on_timeout: false
+  # 3. Lock again after the auto-lock time, if it is still unlocked.
+  - condition: template
+    value_template: "{{ relock_after | int(0) > 0 }}"
+  - delay:
+      seconds: "{{ relock_after | int(0) }}"
+  - condition: template
+    value_template: "{{ is_state(lock_entity, 'unlocked') }}"
+  - action: lock.lock
+    target:
+      entity_id: "{{ lock_entity }}"

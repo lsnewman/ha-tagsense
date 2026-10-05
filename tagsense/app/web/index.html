@@ -1133,7 +1133,10 @@ tagsense_confirm: "Bearer ${tok}"`;
       <button class="small" onclick="tokenShown=!tokenShown;loadCodes()">${tokenShown ? "Hide token" : "Show token"}</button>
       <button class="small" onclick="navigator.clipboard.writeText('Bearer ' + confirmData.token)">Copy token</button>
       <button class="small danger" onclick="rotateConfirm()">Rotate token</button></div>
-    <div class="hint">Restart Home Assistant (or reload REST commands) after adding the rest_command. Rotating the token means updating secrets.yaml.</div></div>`;
+    <div class="hint">Restart Home Assistant (or reload REST commands) after adding the rest_command. Rotating the token means updating secrets.yaml.</div>
+    <div class="row" style="margin-top:10px"><a class="btn primary" target="_blank" rel="noopener"
+      href="https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml">Import the unlock blueprint</a>
+      <span class="muted small">Confirm, unlock, wait for unlocked, lock again after the auto-lock time.</span></div></div>`;
 }
 async function rotateConfirm() {
   if (!confirm("Rotate the confirm token? Automations stop confirming until secrets.yaml is updated.")) return;

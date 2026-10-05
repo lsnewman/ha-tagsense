@@ -449,6 +449,13 @@ Then, in the automation, before the action that matters:
           entity_id: lock.front_door
 ```
 
+**Or use the blueprint**, which does all of this for a lock: it confirms
+the event, unlocks, waits until the lock reports unlocked, waits the auto-lock
+time (fixed, or read from the lock's own auto-lock setting), and locks again
+if the lock is still unlocked. It still needs the `rest_command` above.
+
+[![Import the TagSense unlock blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml)
+
 If TagSense is restarted, unreachable, or the token is wrong, nothing is
 confirmed, so the lock stays shut. *Rotate token* on the Access page replaces
 the token; update `secrets.yaml` afterwards. Only requests from Home

@@ -72,7 +72,10 @@ holds up a code on their phone, and TagSense reports whether it is valid:
 It is off by default and needs its own MQTT login. It **never unlocks
 anything**: your automations decide what a verified code does, and for a lock
 they can ask TagSense to confirm each event first. See the app's
-Documentation tab.
+Documentation tab. A ready-made blueprint for a lock (confirm, unlock, lock
+again after the auto-lock time) is one click away:
+
+[![Import the TagSense unlock blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml)
 
 ## Requirements
 
