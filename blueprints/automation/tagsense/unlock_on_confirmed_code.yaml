@@ -13,6 +13,11 @@ blueprint:
 
     A fake MQTT event cannot unlock: TagSense only confirms events it really
     sent, once each.
+
+
+    Tip: if your lock does not relock by itself after being unlocked from Home
+    Assistant, also add a plain "relock after N seconds of unlocked" automation
+    as a safety net for every unlock, not just these.
   domain: automation
   source_url: https://github.com/lsnewman/ha-tagsense/blob/main/blueprints/automation/tagsense/unlock_on_confirmed_code.yaml
   input:
@@ -58,7 +63,8 @@ blueprint:
       name: Also do this when a code is confirmed (optional)
       description: >-
         Extra actions run after the code is confirmed and the unlock is sent,
-        for example a phone notification. Empty by default. Templates can use
+        for example a phone notification. They run alongside the relock, so if
+        one fails the door is still locked again. Empty by default. Templates can use
         `confirm.content.label` (who) and `confirm.content.code_type`
         (rotating or static).
       default: []
@@ -92,22 +98,26 @@ actions:
     response_variable: confirm
   - condition: template
     value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"
-  # 2. Unlock, run any extra actions, and wait until the lock reports unlocked.
+  # 2. Unlock. Then two independent branches: the relock, and any extra actions.
+  #    Running them in parallel means a failing extra action (say, a notify
+  #    service that no longer exists) cannot stop the door being locked again.
   - action: lock.unlock
     target:
       entity_id: "{{ lock_entity }}"
-  - choose: []
-    default: !input on_confirmed
-  - wait_template: "{{ is_state(lock_entity, 'unlocked') }}"
-    timeout: "00:01:00"
-    continue_on_timeout: false
-  # 3. Lock again after the auto-lock time, if it is still unlocked.
-  - condition: template
-    value_template: "{{ relock_after | int(0) > 0 }}"
-  - delay:
-      seconds: "{{ relock_after | int(0) }}"
-  - condition: template
-    value_template: "{{ is_state(lock_entity, 'unlocked') }}"
-  - action: lock.lock
-    target:
-      entity_id: "{{ lock_entity }}"
+  - parallel:
+      - sequence:
+          # Wait until the lock actually reports unlocked (it can be slow to connect).
+          - wait_template: "{{ is_state(lock_entity, 'unlocked') }}"
+            timeout: "00:01:00"
+            continue_on_timeout: false
+          # 3. Lock again after the auto-lock time, if it is still unlocked.
+          - condition: template
+            value_template: "{{ relock_after | int(0) > 0 }}"
+          - delay:
+              seconds: "{{ relock_after | int(0) }}"
+          - condition: template
+            value_template: "{{ is_state(lock_entity, 'unlocked') }}"
+          - action: lock.lock
+            target:
+              entity_id: "{{ lock_entity }}"
+      - sequence: !input on_confirmed
