@@ -16,6 +16,7 @@ from .objects import (ConfigError, ObjectConfig, ObjectStore, remove_object_dir,
 from .scheduler import STARTUP
 from .sources import build_source
 from .tracker import TrackedObject, Tuning
+from .users import UserDirectory
 
 log = logging.getLogger("tagsense")
 
@@ -86,6 +87,7 @@ class App:
         self.objects: dict[str, TrackedObject] = {}
         self.gen_stop = threading.Event()
         self._build(self.configs)
+        self.users = UserDirectory()     # who is using the panel (ingress header + HA user list)
         self.access = None              # app.access.manager.AccessManager, when enabled
         self.access_error: str | None = None
         if opts.get("access_enabled"):

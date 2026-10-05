@@ -207,6 +207,20 @@ class Api:
             raise ApiError(404, "no image yet")
         return data
 
+    # --- who is using the panel ----------------------------------------------------
+
+    def whoami(self, headers) -> dict:
+        """Read-only check of the ingress user header and the admin lookup."""
+        uid = headers.get("X-Remote-User-Id")
+        u = self.app.users.get(uid) if uid else None
+        return {"header_present": bool(uid),
+                "name": headers.get("X-Remote-User-Display-Name") or headers.get("X-Remote-User-Name"),
+                "found": u is not None, "admin": bool(u and u.is_active and u.is_admin),
+                "lookup": self.app.users.source, "lookup_error": self.app.users.error,
+                # The panel is admin-only in this build, so listing names is fine here.
+                "users": [{"name": x.name, "admin": x.is_admin, "active": x.is_active}
+                          for x in self.app.users.users()] if u and u.is_admin else []}
+
     # --- access (404 unless access_enabled and started) -------------------------
 
     def _access(self):
@@ -294,6 +308,7 @@ ROUTES = [
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/frame\.jpg", "frame"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/(?P<kind>last|phantom)\.jpg", "image"),
     ("GET", r"/api/tag/(?P<tag>\d+)\.(?P<fmt>png|svg)", "tag"),
+    ("GET", r"/api/whoami", "whoami"),
     ("GET", r"/api/access", "access_status"),
     ("POST", r"/api/access/scanners", "access_create"),
     ("PUT", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)", "access_update"),
@@ -379,6 +394,8 @@ def make_handler(api: Api, allow_all: bool):
                     return self._send(200, api.frame(kw["oid"], age), "image/jpeg")
                 if name == "image":
                     return self._send(200, api.image(kw["oid"], kw["kind"]), "image/jpeg")
+                if name == "whoami":
+                    return self._json(200, api.whoami(self.headers))
                 if name in ("access_image", "access_frame"):
                     return self._send(200, getattr(api, name)(kw["sid"]), "image/jpeg")
                 if name == "access_debug":

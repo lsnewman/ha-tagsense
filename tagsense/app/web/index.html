@@ -107,6 +107,7 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
 <header>
   <h1><a href="#/" style="color:inherit">TagSense</a></h1>
   <span class="muted small" id="version"></span>
+  <span class="muted small" id="whoami" style="margin-left:10px"></span>
   <span class="spacer"></span>
   <a class="btn" href="#/access" id="access-link" style="display:none">Access</a>
   <a class="btn" href="#/new">Add object</a>
@@ -147,6 +148,19 @@ const chip = (st, reason) => `<span class="chip ${esc(st)}">${esc(st)}</span>
 const objById = id => state.objects.find(o => o.id === id);
 function fmtNum(v, d = 1) { return v === null || v === undefined ? "–" : (typeof v === "number" ? v.toFixed(d) : esc(v)); }
 
+// Read-only (0.5.0b7): checks that the panel can tell who is using it, ahead of
+// the "My pass" page. It changes nothing.
+async function showWhoami() {
+  try {
+    const w = await api("whoami");
+    const el = document.getElementById("whoami");
+    el.textContent = !w.header_present ? "signed-in user: not provided by Home Assistant"
+      : w.lookup_error ? `signed in as ${w.name || "?"} · admin status unknown (${w.lookup_error})`
+      : `signed in as ${w.name || "?"} · ${w.found ? (w.admin ? "admin" : "not an admin") : "not found in the user list"}`;
+    if (w.users && w.users.length) el.title = "Home Assistant users as TagSense sees them:\n" +
+      w.users.map(u => `${u.name}: ${u.admin ? "admin" : "not an admin"}${u.active ? "" : " (inactive)"}`).join("\n");
+  } catch (e) { /* older back end */ }
+}
 function showAccessLink() {
   const a = state.access || {};
   document.getElementById("access-link").style.display = a.enabled || a.error ? "" : "none";
@@ -1093,6 +1107,7 @@ async function deleteScanner(id) {
   try { state = await api("state"); } catch (e) { $main.innerHTML = `<div class="loading">Could not reach TagSense: ${esc(e.message)}</div>`; }
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
   showAccessLink();
+  showWhoami();
   render(false);
   schedule();
 })();
