@@ -289,10 +289,12 @@ snapshots, and a scan falls back to snapshots by itself if the stream fails.
 Home Assistant cameras always use snapshots.
 
 **Reading distance:** the code has to be large in the frame, about 100 px
-across, or 4-5 px per QR module. Synthetic tests read it reliably at that
-size, plain, blurred and dim. **Screen glare is the main problem**: ask
-visitors to turn the screen brightness up and tilt the phone away from
-lights. Real doorbell distances are not yet tested. *Keep raw scan frames*
+across, or 4-5 px per QR module. TagSense uses the ZXing decoder, which also
+copes with an over-bright phone screen (where the white bleeds into the
+black). Ask visitors to use a medium-high screen brightness (maximum can
+make it worse) and to tilt the phone away from lights to avoid reflections.
+Use the camera's **main** stream: a sub stream has too few pixels and too
+much compression for anything but a short code held close. Real doorbell distances are not yet tested. *Keep raw scan frames*
 (per scanner, off by default) saves up to 50 frames for 24 h so they can be
 checked; turn it off afterwards, because the frames can contain readable
 codes.

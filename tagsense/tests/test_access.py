@@ -409,3 +409,15 @@ def test_go2rtc_url_without_scheme_and_stream_url():
     src = Go2rtcSource("frigate-host:1984/", "front door")
     assert src.url == "http://frigate-host:1984/api/frame.jpeg"
     assert src.stream_url == "http://frigate-host:1984/api/stream.mp4?src=front%20door"
+
+
+def test_real_phone_screen_frames(testdata):
+    """Real camera frames of a phone showing a QR code (test-frames/qr, not
+    committed): ZXing reads every one, including a frame where the bright
+    screen bled into the dark modules and OpenCV found nothing."""
+    files = sorted((testdata / "qr").glob("*.*")) if (testdata / "qr").is_dir() else []
+    if not files:
+        pytest.skip("no frames in test-frames/qr")
+    dec = QrDecoder()
+    misses = [f.name for f in files if not dec.decode(cv2.imread(str(f)))]
+    assert not misses, misses

@@ -302,9 +302,8 @@ path to any lock.
   opens a window of `window_s` (5-120 s, default 20). A press during an open
   window extends it. Frames are fetched `frame_interval_s` apart (default
   0.3 s) and decoded in the scanner's crop. There is no continuous scanning.
-- **Decoding:** crop, grey, 2x cubic upscale, then OpenCV `QRCodeDetector`,
-  falling back to `QRCodeDetectorAruco`. WeChat QR is contrib-only, so it is
-  not available.
+- **Decoding:** crop, grey, then **ZXing** (`zxing-cpp` 3.1.1, Apache-2.0),
+  QR and Micro QR. See "Choosing the decoder" below.
 - **End of the window:** it closes at the first read. Stage 3 will close it
   on a verified code instead.
 - **The payload never leaves the scanner:**
@@ -338,6 +337,31 @@ keyframe wait; the warm start is the keyframe wait alone. Checking at about
 checks more often. If the stream does not open or ends, the rest of the
 window uses snapshots, and a snapshot fetch never runs more than 2 s past the
 end of the window. HA cameras always use snapshots (camera_proxy).
+
+### Choosing the decoder
+
+OpenCV's `QRCodeDetector` and `QRCodeDetectorAruco` (with a 2x upscale) were
+used first. They were replaced by ZXing on 2026-10-05, after real frames from
+the development Reolink (the sub stream, 896x672) of a phone held up to the
+camera:
+
+| | OpenCV (both detectors, 2x) | ZXing |
+|---|---|---|
+| A frame where the bright screen bled into the dark modules (the finder squares lost their 1:1:3:1:1 proportions), easily read by online readers | not even detected | read, 1 ms |
+| 50 consecutive scan frames of a short code | 0 read | 13 read |
+| Time per frame (real frames) | median 21 ms | median 1 ms |
+| Micro QR (pinned 5.0.0.93) | not read even when clean | read |
+
+ZXing then OpenCV as a fallback read no extra real frames, so the app uses
+ZXing alone. In the synthetic sweep below OpenCV did better in some cells,
+notably an artificial diagonal glare band that ZXing never read. Real frames
+take precedence, but if real glare failures appear, adding the OpenCV
+fallback is a one-line change in `QrDecoder` (the sweep compares both).
+
+Micro QR would not help: the largest (M4, 17 modules) holds at most 21
+letters/digits, too few for a signed code with an 80-bit tag. Signed codes
+target QR version 1 (21 modules, 25 letters/digits at low error correction),
+or version 2 at most.
 
 ### QR reading: measurements
 

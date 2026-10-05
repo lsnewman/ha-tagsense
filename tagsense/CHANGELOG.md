@@ -30,6 +30,11 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   start, then about 7 frames per second). The scanner card and the log show
   each scan's timing. A per-scanner *Frame capture* setting can switch to
   single snapshots, and a failed stream falls back to snapshots.
+- **QR decoding uses ZXing** (new dependency `zxing-cpp`). On real camera
+  frames of a phone screen, OpenCV's QR detector read nothing (it did not
+  even detect an easily readable code whose bright screen had bled into the
+  dark modules); ZXing read it, and 13 of 50 frames of a scan, in about 1 ms
+  per frame. It also reads Micro QR. AprilTag detection is unchanged.
 - `go2rtc_url` without `http://` now works (it is added).
 - New `app/sweep.py` (development): per-family decode margin on synthetic
   frames and on real frames with the tag swapped in, phantom counts, and a

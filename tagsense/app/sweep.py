@@ -233,7 +233,7 @@ def ablated_params(field: str) -> aruco.DetectorParameters:
 
 QR_MODULE_PX = (2.0, 2.5, 3.0, 4.0, 5.0)
 QR_PAYLOADS = {"25 chars": "TS1RAB12CD34EF56GH78JK2Q3", "45 chars": "TS1SAB12CD34X7Q2K9M" + "Z" * 26}
-QR_CONDITIONS = ("plain", "blur", "dim", "glare")
+QR_CONDITIONS = ("plain", "blur", "dim", "glare", "bloom")
 
 
 def qr_scene(payload: str, module_px: float, cond: str, rng) -> np.ndarray:
@@ -242,6 +242,8 @@ def qr_scene(payload: str, module_px: float, cond: str, rng) -> np.ndarray:
     q = cv2.QRCodeEncoder.create().encode(payload)
     side = int(q.shape[0] * module_px)
     img = cv2.cvtColor(cv2.resize(q, (side, side), interpolation=cv2.INTER_AREA), cv2.COLOR_GRAY2BGR)
+    if cond == "bloom":             # an over-bright screen: white bleeds into the dark modules
+        img = cv2.dilate(img, np.ones((max(2, int(module_px * 0.45)),) * 2, np.uint8))
     if cond == "glare":             # a bright diagonal band, as a screen reflection
         yy, xx = np.mgrid[0:side, 0:side]
         band = np.exp(-((xx - yy) / (side * 0.12)) ** 2)[..., None] * 160
@@ -264,31 +266,35 @@ def qr_scene(payload: str, module_px: float, cond: str, rng) -> np.ndarray:
 
 def qr_sweep(root: Path | None, trials: int) -> int:
     from .access.qr import QrDecoder
-    rng, dec = np.random.default_rng(3), QrDecoder()
-    print(f"# QR sweep, {trials} trials per cell, OpenCV {cv2.__version__}")
+    rng = np.random.default_rng(3)
+    decs = {"zxing": QrDecoder(("zxing",)), "opencv": QrDecoder(("classic", "aruco"))}
+    print(f"# QR sweep, {trials} trials per cell (the same frames for each decoder), "
+          f"OpenCV {cv2.__version__}")
     for label, payload in QR_PAYLOADS.items():
         q = cv2.QRCodeEncoder.create().encode(payload)
-        rows, times = [], []
+        hits = {(d, c, m): 0 for d in decs for c in QR_CONDITIONS for m in QR_MODULE_PX}
+        times = {d: [] for d in decs}
         for cond in QR_CONDITIONS:
-            row = []
             for m in QR_MODULE_PX:
-                ok = 0
                 for _ in range(trials):
-                    r = dec.decode(qr_scene(payload, m, cond, rng))
-                    if r:
-                        times.append(r.ms)
-                    ok += bool(r and r.text == payload)
-                row.append(f"{ok}/{trials}")
-            rows.append((cond, row))
+                    img = qr_scene(payload, m, cond, rng)
+                    for d, dec in decs.items():
+                        t = time.perf_counter()
+                        r = dec.decode(img)
+                        times[d].append((time.perf_counter() - t) * 1000)
+                        hits[(d, cond, m)] += bool(r and r.text == payload)
         table(f"QR {label} ({q.shape[0]} modules with quiet zone): decodes by px per module",
-              [f"{m:g}px" for m in QR_MODULE_PX], rows)
-        if times:
-            print(f"decode time (successful reads, whole 1280x720 frame): "
-                  f"median {np.median(times):.0f} ms, max {max(times):.0f} ms")
+              [f"{m:g}px" for m in QR_MODULE_PX],
+              [(f"{d} {c}", [f"{hits[(d, c, m)]}/{trials}" for m in QR_MODULE_PX])
+               for c in QR_CONDITIONS for d in decs])
+        for d, ts in times.items():
+            print(f"{d}: median {np.median(ts):.0f} ms, max {max(ts):.0f} ms per 1280x720 frame "
+                  "(reads and misses)")
     real = load_frames(root, "qr") if root else []
     if real:
-        hits = sum(bool(dec.decode(img)) for _, img in real)
-        print(f"\nreal frames in {root}/qr: {hits}/{len(real)} read")
+        for d, dec in decs.items():
+            print(f"real frames in {root}/qr, {d}: "
+                  f"{sum(bool(dec.decode(img)) for _, img in real)}/{len(real)} read")
     return 0
 
 
