@@ -717,3 +717,26 @@ def test_confirm_not_reachable_through_ingress(tmp_path):
         assert app.access.confirm.confirm(eid) is not None                # still unused
     finally:
         srv.shutdown()
+
+
+def test_scanner_settings_travel_in_export_but_no_secrets(tmp_path):
+    src, src_api = admin_app(tmp_path / "a")
+    src_api.access_create({"name": "Front door", "source": "go2rtc", "go2rtc_stream": "doorbell",
+                           "camera_entity": "camera.door", "crop_x1": 0.3, "window_s": 15})
+    src_api.access_person_add({"label": "Luke", "ha_user_id": "u1"})
+    src_api.access_static_issue({"label": "Plumber", "uses": 1})
+    text = json.dumps(src_api.export())
+    assert "secret" not in text and "Plumber" not in text and "Luke" not in text
+    assert codes.parse(text) is None
+
+    dst, dst_api = admin_app(tmp_path / "b")
+    r = dst_api.import_({"text": text})
+    assert r["scanners"] == {"added": ["front_door"], "updated": []}
+    sc = dst.access.configs[0]
+    assert (sc.crop_x1, sc.window_s, sc.capture) == (0.3, 15.0, "auto")
+    assert dst.access.codes.people() == [] and dst.access.codes.static_codes() == []
+    assert dst_api.import_({"text": text})["scanners"] == {"added": [], "updated": ["front_door"]}
+
+    off = make_app(tmp_path / "c")                          # access not enabled there
+    r = Api(off).import_({"text": text})
+    assert "not enabled" in r["scanners"]["skipped"] and r["updated"] == []

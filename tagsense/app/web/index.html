@@ -268,7 +268,8 @@ const transferCard = () => `
         <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install
           (for example between TagSense and TagSense (dev)). It includes each object's last 24 hours of chart history and its
           learned position. Importing adds new objects and updates ones with the same id; objects not in the text are kept.
-          History is merged without doubling, and the learned position is taken only if the imported one is newer.</p>
+          History is merged without doubling, and the learned position is taken only if the imported one is newer.
+          With access codes on, it also carries the scanners' settings (camera, scan area, capture), but never keys, passes or codes.</p>
         <textarea id="t-export" readonly></textarea>
         <div class="row" style="margin-top:8px"><button onclick="copyExport()">Copy</button>
           <button onclick="downloadExport()">Download</button><span class="muted small" id="t-copied"></span></div>
@@ -308,8 +309,11 @@ async function importObjects() {
     const r = await api("import", { method: "POST", body: { text } });
     const hist = Object.entries(r.history || {}).map(([id, h]) =>
       `${id}: ${h.checks_added} chart records${h.reference_taken ? ", learned position" : ""}`).join("; ");
+    const sc = r.scanners || {};
+    const scText = sc.skipped ? `\nScanners not imported: ${sc.skipped}.`
+      : (sc.added || sc.updated) ? `\nScanners added: ${(sc.added || []).join(", ") || "none"}; updated: ${(sc.updated || []).join(", ") || "none"}.` : "";
     alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.` +
-      (hist ? `\nHistory merged: ${hist}.` : ""));
+      (hist ? `\nHistory merged: ${hist}.` : "") + scText);
     document.getElementById("t-import").value = "";
     transferOpen = false;                   // let the refresh redraw the list with the new objects
     await refresh();

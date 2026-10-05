@@ -362,6 +362,17 @@ is turned 180°; telling those apart would need a second tag with another ID
 
 ## Upgrading
 
+- **To 0.5.0:**
+  - **Nothing changes for your objects** unless you opt in: existing objects
+    stay on tag16h5, and access codes are off by default.
+  - **The TagSense sidebar entry now shows for every Home Assistant user**,
+    but non-admins only see their own door pass.
+  - **Moving from a "TagSense (dev)" install:** export from it and import
+    into this one. The objects bring their history, and the access scanners
+    their settings. Passes, static codes and the confirm token are never
+    exported: re-add the passes, re-issue the codes, and update `secrets.yaml`
+    and the `rest_command` URL (this app's hostname) from the *Confirm events*
+    card.
 - **To 0.4.3:** new *Rotation*, *Rotation steps* and *Set current orientation
   as 0°* entities appear. 0° is set from the first sighting after the update;
   press the button if the object was not in its normal orientation then.

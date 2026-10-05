@@ -158,7 +158,10 @@ class Api:
                     entry["settings"] = o.settings_values()
                 entry["history"] = o.export_history()      # chart log + learned position
             out.append(entry)
-        return {"tagsense": 1, "objects": out}
+        result = {"tagsense": 1, "objects": out}
+        if self.app.access is not None:      # scanner settings only: never keys, passes or codes
+            result["access_scanners"] = [c.to_dict() for c in self.app.access.configs]
+        return result
 
     def import_(self, body: dict) -> dict:
         """Add or update objects by id; objects not in the import are kept."""
@@ -169,7 +172,8 @@ class Api:
             except ValueError as e:
                 raise ApiError(400, f"not valid JSON: {e}") from None
         entries = data.get("objects") if isinstance(data, dict) else data
-        if not isinstance(entries, list) or not entries:
+        scanners = data.get("access_scanners") if isinstance(data, dict) else None
+        if not isinstance(entries, list) or not (entries or scanners):
             raise ApiError(400, "expected a list of objects (as exported)")
         configs = list(self.app.configs)
         by_id = {c.id: i for i, c in enumerate(configs)}
@@ -206,7 +210,39 @@ class Api:
             if o := self.app.objects.get(oid):
                 history[oid] = o.import_history(h)
         log.info("imported objects: added %s, updated %s", added or "none", updated or "none")
-        return {"added": added, "updated": updated, "history": history}
+        return {"added": added, "updated": updated, "history": history,
+                "scanners": self._import_scanners(scanners)}
+
+    def _import_scanners(self, raw) -> dict:
+        """Add or update access scanners by id (settings only); others are kept."""
+        if not isinstance(raw, list) or not raw:
+            return {}
+        if self.app.access is None:
+            return {"skipped": "access is not enabled on this install (access_enabled)"}
+        from .access.config import parse_scanner
+        acc = self.app.access
+        configs = list(acc.configs)
+        by_id = {c.id: i for i, c in enumerate(configs)}
+        added, updated = [], []
+        for n, entry in enumerate(raw):
+            try:
+                sc = parse_scanner(entry, f"access_scanners[{n}]")
+            except ConfigError as e:
+                raise ApiError(400, str(e)) from None
+            if sc.id in by_id:
+                configs[by_id[sc.id]] = sc
+                updated.append(sc.id)
+            else:
+                by_id[sc.id] = len(configs)
+                configs.append(sc)
+                added.append(sc.id)
+        if configs != acc.configs:
+            try:
+                acc.apply(configs)
+            except ConfigError as e:
+                raise ApiError(400, str(e)) from None
+        log.info("imported scanners: added %s, updated %s", added or "none", updated or "none")
+        return {"added": added, "updated": updated}
 
     def frame(self, oid: str, max_age_s: float) -> bytes:
         try:

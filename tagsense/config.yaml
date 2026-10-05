@@ -1,5 +1,5 @@
-name: TagSense (dev)
-version: "0.5.0b12"
+name: TagSense
+version: "0.5.0"
 slug: tagsense
 description: Detect whether tagged objects (bin, car, chair...) are in place from AprilTags, published to HA via MQTT.
 url: https://github.com/lsnewman/ha-tagsense
