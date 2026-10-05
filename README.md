@@ -62,6 +62,17 @@ Check now when the object has just been moved triggers a short series of
 confirmation checks, so absent is confirmed in about a minute and a half rather
 than after several polls.
 
+## Access codes at the door (optional)
+
+TagSense can also read QR codes from a doorbell camera. A visitor rings and
+holds up a code on their phone, and TagSense reports whether it is valid:
+- a rotating **pass** for Home Assistant users;
+- a time-limited **static code** to send to a tradesperson.
+
+It is off by default, needs its own MQTT login and a broker ACL, and **never
+unlocks anything**: your automations decide what a verified code does. See
+the app's Documentation tab.
+
 ## Requirements
 
 - Home Assistant OS or Supervised (apps need the Supervisor). Built for

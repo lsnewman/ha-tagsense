@@ -214,13 +214,23 @@ families can share a camera, even with the same ID. If you switch an
 existing object to a new tag, press *Reset learned position* once the new
 tag is in place.
 
-## Access codes at the door (in development, off by default)
+## Access codes at the door (off by default)
 
-**This is a preview.** In this version a scanner only reports that it *read*
-a QR code. It reports the code's length and a short fingerprint, never what
-the code says. Nothing is verified yet: signed access codes come in a later
-build. **TagSense never unlocks anything.** It only emits events, and your
-Home Assistant automations decide what to do with them.
+A visitor rings the doorbell and holds up a code on their phone. TagSense
+checks it and reports a **verified** event (or why not) to Home Assistant.
+**TagSense never unlocks anything.** It holds no lock credentials and has no
+path to a lock. Your automations decide what a verified event does.
+
+There are two kinds of code:
+
+- **Passes** (rotating): for people who come and go, such as family. Each
+  pass belongs to one Home Assistant user, who opens it from the TagSense
+  entry in the HA sidebar or app. The code changes every 30 s, and each code
+  works once.
+- **Static codes**: for sending to someone, such as a tradesperson, by text.
+  Give it an optional start time, plus an expiry and/or a number of uses (at
+  least one). A code with no expiry still expires after a backstop (90 days by
+  default, at most a year). Assume a static code can be forwarded.
 
 ### Turning it on
 
@@ -228,12 +238,12 @@ Access needs **its own MQTT login**. The login Home Assistant gives apps is
 shared by every app, so if TagSense used it, any other app could publish a
 fake access event.
 
-1. In the **Mosquitto broker** app, add a login under *Logins*, for example
-   `tagsense_access` with a long random password. **Use this login for
-   TagSense access only.** Never give it to another app, integration or
-   device (ESPHome, zigbee2mqtt, Node-RED, a phone app...), and never reuse
-   its password. Anything that can log in as this user can fake an access
-   event.
+1. In the **Mosquitto broker** app (not the MQTT integration), add a login
+   under *Logins*, for example `tagsense_access` with a long random password.
+   **Use this login for TagSense access only.** Never give it to another app,
+   integration or device (ESPHome, zigbee2mqtt, Node-RED, a phone app...), and
+   never reuse its password. Anything that can log in as this user can fake an
+   access event.
 2. Restrict who may write the access topics (see the ACL below).
 3. On TagSense's **Configuration** tab, set `access_enabled` to on, and set
    `access_mqtt_username` and `access_mqtt_password` to the new login. Then
@@ -243,23 +253,29 @@ If the login is missing, or is the same as the shared app login, access stays
 off and the panel's **Access** page says why. The bin sensor is unaffected
 either way.
 
+### Who sees what in the panel
+
+Every Home Assistant user sees the TagSense entry in the sidebar.
+**Admins** get the whole panel. **Everyone else gets only "My pass"**: their
+own pass, if an admin has given them one. TagSense asks Home Assistant who is
+an admin. If it cannot tell, for example because Home Assistant is
+restarting, nobody counts as an admin until it can.
+
 ### Scanners
 
 Open **Access** in the panel and add a **scanner**: the doorbell camera (a
-go2rtc stream or an HA camera), the area of the frame where a visitor holds
-up their phone, and how long a scan lasts (default 20 s). After adding it,
-its page has the same scan-area editor as an object: drag a box on a live
-frame (any readable code in the frame is blacked out there too). Each scanner is a
+go2rtc stream, an HA camera, or both), the area of the frame where a visitor
+holds up their phone, and how long a scan lasts (default 20 s). After adding
+it, its page has the same scan-area editor as an object: drag a box on a live
+frame (any readable code in the frame is blacked out there). Each scanner is a
 device, **TagSense Access `<name>`**, with these entities:
 
 - **Scan** (button): starts a scan window. Scanning only happens in these
   windows, never continuously.
-- **Code** (event): `qr_seen` (attributes `fingerprint`, `length`,
-  `decoder`, `frames`, `scanned_at`) or `scan_timeout` (no code before the
-  window ended). Events are never retained.
+- **Code** (event): what happened, see the table below. Events are never
+  retained.
 - **Scanning** (binary sensor): on while a window is open.
-- **Last scan** (image): the scan area at the end of the last window, with
-  any code blacked out.
+- **Last scan** (image): the scan area, with every code blacked out.
 
 A doorbell press starts the scan:
 
@@ -276,28 +292,111 @@ automation:
           entity_id: button.tagsense_access_front_door_scan
 ```
 
-**Frame capture:** for a go2rtc camera, a scan holds the camera's video
-stream open (go2rtc's `stream.mp4`) and checks the newest frame again and
-again. Requesting single JPEGs instead (go2rtc's `frame.jpeg`) can take
-several seconds per frame, because go2rtc has to wait for a keyframe and
-convert it each time. On a 5 MP Reolink, single JPEGs took about 6 s each;
-the stream took about 6 s to start, then about 7 full-resolution frames a
-second were checked. The start is faster (1-3 s) when something, such as
-Frigate, already has the stream running. The scanner card shows the timing of
-the last scan. *Frame capture* in the scanner settings switches to single
-snapshots, and a scan falls back to snapshots by itself if the stream fails.
-Home Assistant cameras always use snapshots.
+A window ends at the first verified code, or after the window time.
 
-**Reading distance:** the code has to be large in the frame, about 100 px
-across, or 4-5 px per QR module. TagSense uses the ZXing decoder, which also
-copes with an over-bright phone screen (where the white bleeds into the
-black). Ask visitors to use a medium-high screen brightness (maximum can
-make it worse) and to tilt the phone away from lights to avoid reflections.
-Use the highest-resolution stream the camera offers. A low-resolution
-stream (for example 896x672) still reads a short code held close. Real doorbell distances are not yet tested. *Keep raw scan frames*
-(per scanner, off by default) saves up to 50 frames for 24 h so they can be
-checked; turn it off afterwards, because the frames can contain readable
-codes.
+### Events
+
+| `event_type` | Meaning | Attributes |
+|---|---|---|
+| `verified` | A valid code. The only one to act on. | `label`, `code_type` (`rotating`/`static`), `code_id`, `expires`, `uses_left`, `scanned_at`, `scanner` |
+| `invalid` | Looks like a TagSense code but does not check out (forged, mistyped, from a deleted pass or an old key). | `fingerprint` only |
+| `not_yet_valid` | A genuine static code before its start time. | as `verified`, plus `valid_from` |
+| `expired` | A genuine code after its expiry. | as `verified` |
+| `replayed` | A genuine code that was already used (a pass code shown twice, or a static code with no uses left). | as `verified` |
+| `revoked` | A genuine static code that was revoked or deleted. | `code_id`, `label` |
+| `locked_out` | Too many bad codes: the scanner ignores scans for 15 minutes. | `locked_until` |
+| `unrecognised` | A QR code that is not a TagSense code (a parcel label...). | `fingerprint` only |
+| `unavailable` | TagSense could not check (it fails closed). | `reason` |
+| `scan_timeout` | No valid code before the window ended. | frame counts and timing |
+
+Bad codes (`invalid`, `expired`, `replayed`, `revoked`) count towards a
+**lockout**: more than 3 in one window, or more than 5 in 10 minutes, locks
+the scanner for 15 minutes. The lockout survives restarts and is cleared only
+in the panel. Someone could set it off on purpose; that keeps the door shut,
+it never opens it. A code's text never appears in events, logs or images:
+codes that are not verified are shown only as a short fingerprint.
+
+**Acting on `verified`:** an event entity's state is the time of its last
+event, and it is restored when TagSense or Home Assistant restarts. Write the
+automation so a restart cannot look like a new event: ignore changes from
+`unavailable`/`unknown`, and check the event is recent. For example, a
+notification:
+
+```yaml
+automation:
+  - alias: "Front door: code verified"
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: event.tagsense_access_front_door_code
+        not_from: ["unavailable", "unknown"]
+    conditions:
+      - condition: state
+        entity_id: event.tagsense_access_front_door_code
+        attribute: event_type
+        state: verified
+      - condition: template
+        value_template: >-
+          {{ (now() - as_datetime(trigger.to_state.state)).total_seconds() < 30 }}
+    actions:
+      - action: notify.notify
+        data:
+          message: >-
+            {{ trigger.to_state.attributes.label }} verified at the front door
+            ({{ trigger.to_state.attributes.code_type }} code)
+```
+
+What you do on `verified` (a notification, turning on a light, or, if you
+decide to, unlocking) is up to you. Notify on `invalid` and `locked_out` too,
+so you hear about attempts.
+
+### Passes and static codes (panel, admins)
+
+- **Passes:** add a pass with a label and the Home Assistant user who will
+  carry it. That user opens TagSense in the sidebar (or the HA app) to show
+  it. *Disable* stops it working; *Re-enrol* gives it a new secret, so every
+  earlier code stops working (use it if a phone is lost); *Delete* removes it.
+- **Static codes:** *Issue code* with a label, an optional start, and an
+  expiry and/or a number of uses. The code is shown as a picture with a
+  ready-to-send message; *Download image*, then send both. *Show* displays it
+  again while it is valid; *Revoke* stops it at once; *Revoke all static
+  codes* stops every one; *Rotate signing key* invalidates every static code
+  issued so far (passes are not affected).
+
+### Frame capture and reading distance
+
+- **Auto** (the default when a scanner has both a go2rtc stream and an HA
+  camera): snapshots from the HA camera straight away, then the go2rtc video
+  stream once it is running. On the development camera the HA camera gave a
+  first full-resolution frame in 0.8 s; the stream took about 6 s to start,
+  then gave several frames a second.
+- **Video stream** (go2rtc): holds the stream open for the window. Requesting
+  single JPEGs from go2rtc instead can take several seconds each.
+- **Snapshots:** single images, the only choice for an HA camera on its own.
+
+A scan falls back to snapshots if the stream fails, and the scanner card
+shows the timing of the last scan. A code has to be about 100 px across in the
+frame (4-5 px per QR module). TagSense's codes are deliberately small (QR
+version 2), and the ZXing decoder copes with an over-bright phone screen. Ask
+visitors to use medium-high screen brightness (maximum can make it worse) and
+to tilt the phone away from lights. Use the highest-resolution stream the
+camera offers; a low-resolution stream (for example 896x672) still reads a
+code held close. *Keep raw scan frames* (per scanner, off by default) saves up
+to 50 frames for 24 h for checking; TagSense codes in them are blacked out.
+
+### What this does and does not protect against
+
+- **Forged or altered codes:** every code is signed (HMAC-SHA256, 80-bit
+  tag); a changed character fails.
+- **Replayed codes** (a code filmed or photographed, or a doorbell recording):
+  each pass code works once and only for about a minute; static codes have
+  limited uses and an expiry.
+- **Forwarded static codes:** cannot be prevented, which is why they expire
+  and can be limited to one use and revoked.
+- **Someone at the door with your phone unlocked:** not something a code can
+  tell apart.
+- **Fake events:** prevented only if nothing else can publish to the access
+  topics, which is what the dedicated login and the ACL are for.
 
 ### Broker ACL (required)
 

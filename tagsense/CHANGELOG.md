@@ -14,16 +14,27 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   tested on synthetic frames only. Trade-off: bigger grids resist phantoms
   far better (on 2000 random textures: tag16h5 40 false decodes, tag25h9 1,
   the 36-bit families none), but need about 1.25x the printed size.
-- **Access codes, preview (off by default).** A new *Access* page in the
-  panel manages QR **scanners**, for example the doorbell camera, each with
-  its own source, scan area and scan window. A *Scan* button (pressed by a
-  doorbell automation) scans for a few seconds. In this build a scan only
-  reports *that* a code was read: a `qr_seen` event with the code's length
-  and a fingerprint, never its content. Images have the code blacked out.
-  Verification of signed codes comes next. Access is turned on with
-  `access_enabled` and needs its own MQTT login (`access_mqtt_username` /
-  `access_mqtt_password`) plus a broker ACL (see the docs). The bin sensor
-  does not load or touch any of it while it is off.
+- **Access codes at the door (off by default).** A visitor rings and holds up
+  a code on their phone. TagSense verifies it and reports an event; it never
+  unlocks anything.
+  - **Passes** (rotating, every 30 s, each code works once) for Home
+    Assistant users, shown on a new *My pass* page.
+  - **Static codes** for visitors, with an optional start, an expiry and/or a
+    number of uses, plus a backstop expiry. Revocable.
+  - Codes are signed (HMAC-SHA256) and checked in one place that fails
+    closed. Replay protection, and a lockout after repeated bad codes.
+  - Events: `verified`, `invalid`, `not_yet_valid`, `expired`, `replayed`,
+    `revoked`, `locked_out`, `unrecognised`, `unavailable`, `scan_timeout`.
+  - Scanners (e.g. the doorbell) have their own source, scan area, scan
+    window and capture mode (*auto*: HA camera snapshots until the go2rtc
+    stream runs).
+  - Needs its own MQTT login (`access_mqtt_username`/`access_mqtt_password`)
+    and a broker ACL (see the docs). The bin sensor does not load any of it
+    while it is off.
+- **The TagSense panel is now visible to every Home Assistant user**, but only
+  admins get past the *My pass* page; everyone else sees only their own pass.
+  Admin status comes from Home Assistant (new dependency `websocket-client`),
+  and if it cannot be checked, nobody counts as an admin.
 - **Faster scanning from go2rtc.** A scan holds the camera's video stream
   open and checks the newest frame continuously, instead of requesting one
   JPEG at a time (about 6 s per frame on a 5 MP Reolink; now about 6 s to

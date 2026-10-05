@@ -388,16 +388,86 @@ payload, version 2.)
   `debug_frames` to collect `test-frames/qr/`, then run `app.sweep --qr
   ../test-frames`.
 
-### Signed codes (stage 3, next)
+### Signed codes (stage 3)
 
-Agreed design (see the 0.5.0 plan):
-- **Rotating per-person codes:** TOTP-style, 30-60 s steps, current and
-  previous step accepted, RFC 6238 replay protection, shown on an ingress
-  "My pass" page tied to the HA user.
-- **Static codes:** signed (HMAC-SHA256, 80-bit tag), with a server-side
-  record. They need an expiry **or** a number of uses (at least one); with
-  no expiry, a backstop expiry applies (90 days by default, at most 1 year).
-  An optional start time is allowed.
-- **Verification:** in one function that fails closed.
-- **Lockout:** per scanner and persisted.
-- **Issue and revoke:** in the panel only.
+**Formats** (`app/access/codes.py`): both use only Base32 characters (in the
+QR alphanumeric set), fit QR version 2 at error correction M (25 modules), and
+read back with ZXing in tests:
+- rotating, 23 chars: `TR` + version + handle(4) + MAC(16), with
+  MAC = HMAC-SHA256(person secret, `TR|v|handle|step`) truncated to 80 bits,
+  step = unix/30. The step is not in the code.
+- static, 34 chars: `TS` + version + code_id(8) + expiry(7, minutes since
+  2025-01-01) + MAC(16), with MAC = HMAC-SHA256(static key,
+  `TS|v|id|expiry`) truncated to 80 bits. A server-side record (label,
+  `valid_from`, uses left, revoked) is also required.
+
+**Store** (`store.py`): `/data/access/{keys,people,static,state}.json`,
+mode 0600 in a 0700 directory, written tmp + fsync + rename. A write failure
+raises.
+
+**Verifier** (`verifier.py`), the only place a code is judged, in this order:
+1. Clock before 2025: `unavailable`.
+2. Scanner locked: `locked_out`, without parsing the code.
+3. Not our format: `unrecognised`.
+4. Rotating:
+   - an unknown handle, a disabled person or the wrong version gives
+     `invalid`;
+   - the MAC is checked in constant time for step and step-1 only;
+   - a step at or below the last one used gives `replayed`;
+   - otherwise the new last step is persisted and the result is `verified`.
+5. Static:
+   - the key version and MAC are checked;
+   - the record must exist, not be revoked, and match the code's version and
+     expiry, otherwise `revoked`;
+   - before the start gives `not_yet_valid`, which does not count towards
+     lockout;
+   - after the expiry gives `expired`;
+   - no uses left gives `replayed`;
+   - otherwise the decrement is persisted and the result is `verified`.
+
+Any exception, including a failed write, gives `unavailable`. Lockout counts
+`invalid`, `expired`, `replayed` and `revoked`: more than 3 distinct bad codes
+in a window, or more than 5 in 10 minutes, locks the scanner for 15 minutes.
+The lockout is persisted and cleared only in the panel. A locked scanner
+doesn't fetch frames at all.
+
+**Scan window** (`scanner.py`):
+- ZXing returns every code in a frame, and each distinct code is judged once
+  per window.
+- The window ends at `verified`, `locked_out` or `unavailable`.
+- Foreign and `invalid` codes are reported by fingerprint only.
+- Images black out every code, and debug frames black out TagSense codes.
+- **Auto capture:** HA camera snapshots until the go2rtc stream's first
+  frame, then the stream.
+
+**Issuing** (`issue.py`, admin panel only): static codes need an expiry or
+uses; with no expiry, a backstop of 90 days (adjustable, at most 365)
+applies; there is an optional start; codes are valid for at least 10 minutes.
+Passes are bound to an HA user ID; re-enrolling bumps the secret's version.
+
+**Who is using the panel** (`users.py`, `web.py`):
+- Ingress adds `X-Remote-User-Id`. `web.py` only accepts the ingress proxy's
+  address, so that header can't be forged by anyone else.
+- Admin status comes from Core's WebSocket `config/auth/list` (Supervisor
+  token, cached 60 s): the owner or the `system-admin` group.
+- `panel_admin: false`. One guard before any route: only `whoami`,
+  `pass_info` and `pass_png` are open to non-admins, so new routes are
+  admin-only by default.
+- A missing header, a failed lookup or an unknown user all mean "not an
+  admin". A test walks every route as a non-admin and anonymously.
+- `trust_admin` exists only as a code parameter for tests and demos.
+- Verified on a real install (0.5.0b7) on 2026-10-05.
+
+**Home Assistant side:** an event entity's state (its last event time) is
+restored when HA or TagSense restarts, so the documented automation ignores
+changes from `unavailable`/`unknown` and requires the event to be under 30 s
+old.
+
+**Threat model:**
+- Forged or altered codes fail the MAC.
+- Replay is limited by single-use pass steps and static uses or expiry.
+- A forwarded static code can't be prevented, only limited (expiry, uses,
+  revoke).
+- Fake events are prevented by the dedicated MQTT login and the broker ACL
+  (still to be verified live on the development broker).
+- TagSense holds no lock credentials.
