@@ -58,6 +58,7 @@ class Scanner:
         self.capture_factory = capture_factory
         self.stream: FrameStream | None = None      # open only during a stream window
         self.last_stats: dict | None = None
+        self.preview_img: np.ndarray | None = None  # the frame just checked, during a window
         self.fetch_lock = threading.Lock()
         # For the panel
         self.events: deque[dict] = deque(maxlen=EVENTS_KEPT)
@@ -147,7 +148,7 @@ class Scanner:
                 st["frames"] += 1
                 if "first_frame_s" not in st:
                     st["first_frame_s"] = round(time.monotonic() - t0, 1)
-                last_img = img
+                last_img = self.preview_img = img
                 read = self.decoder.decode(img, self.cfg.crop)
                 if read:
                     break
@@ -160,6 +161,7 @@ class Scanner:
                 self.stream = None
         with self.cond:
             self.deadline = 0.0
+        self.preview_img = None
         if self.stop_event.is_set():
             self._set_scanning(False)
             return
@@ -227,9 +229,11 @@ class Scanner:
 
     def grab(self) -> bytes:
         """A frame for the panel's preview, with any readable QR code blacked out.
-        During a stream scan it is the stream's newest frame (no extra fetch)."""
-        stream = self.stream
-        img = stream.latest() if stream is not None else None
+        During a scan it is the frame the scanner just checked (no extra fetch,
+        whatever the capture mode); otherwise a fresh snapshot."""
+        img = self.preview_img
+        if img is None and self.stream is not None:
+            img = self.stream.latest()
         if img is None:
             img = decode_jpeg(self.fetch())
         if img is None:

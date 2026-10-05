@@ -894,13 +894,16 @@ async function accessPage(isRefresh) {
   }
   try { access = await api("access"); } catch (e) { if (!isRefresh) $main.innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
   if (isRefresh && document.getElementById("acc-root")) {
-    for (const sc of access.scanners) {
-      const el = document.getElementById("acc-" + sc.id);
-      if (el) el.outerHTML = scannerCard(sc);
+    const ids = access.scanners.map(sc => sc.id).join(",");
+    if (ids === document.getElementById("acc-root").dataset.ids) {
+      for (const sc of access.scanners) {        // leave each live frame alone
+        const el = document.getElementById("acc-dyn-" + sc.id);
+        if (el) el.innerHTML = scannerDynamic(sc);
+      }
+      return;
     }
-    return;
   }
-  $main.innerHTML = `<div id="acc-root">
+  $main.innerHTML = `<div id="acc-root" data-ids="${esc(access.scanners.map(sc => sc.id).join(","))}">
     <div class="row" style="margin-bottom:12px"><h2 style="flex:1;margin:0">Access scanners</h2>
       <a class="btn" href="#/access/new">Add scanner</a></div>
     ${access.mqtt_connected ? "" : `<div class="notice alert">The access MQTT connection is down: check access_mqtt_username / access_mqtt_password and the broker log.</div>`}
@@ -910,23 +913,27 @@ async function accessPage(isRefresh) {
   </div>`;
 }
 function scannerCard(sc) {
+  return `<div class="card" id="acc-${esc(sc.id)}" style="margin-bottom:16px">
+    <div id="acc-dyn-${esc(sc.id)}">${scannerDynamic(sc)}</div>
+    <div id="acc-live-${esc(sc.id)}" style="margin-top:12px">${liveOpen.has(sc.id) ? liveBox(sc) : ""}</div>
+  </div>`;
+}
+function scannerDynamic(sc) {
   const last = sc.events[0];
   const src = sc.source === "go2rtc" ? "go2rtc " + sc.go2rtc_stream : sc.camera_entity;
   const crop = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2];
-  return `<div class="card" id="acc-${esc(sc.id)}" style="margin-bottom:16px">
-    <div class="row"><h2 style="flex:1">${esc(sc.name)}</h2>
+  return `<div class="row"><h2 style="flex:1">${esc(sc.name)}</h2>
       ${sc.scanning ? `<span class="chip present">scanning</span>` : `<span class="chip absent">idle</span>`}</div>
     <div class="muted small">${esc(src)} · window ${sc.window_s} s · crop ${crop.map(v => (+v).toFixed(2)).join(", ")}</div>
     ${sc.last_stats ? `<div class="hint">Last scan ${ago(sc.last_stats.at)}: ${esc(statsText(sc.last_stats))}</div>` : ""}
     ${sc.last_error ? `<div class="hint">Last fetch error: ${esc(sc.last_error)}</div>` : ""}
     <div class="row" style="margin-top:8px">
       <button class="primary" onclick="accessScan('${sc.id}', this)" ${sc.scanning ? "disabled" : ""}>Scan now</button>
-      <button onclick="accessFrame('${sc.id}')">Show live frame</button>
+      <button onclick="toggleLive('${sc.id}')">${liveOpen.has(sc.id) ? "Hide live frame" : "Show live frame"}</button>
       <a class="btn" href="#/access/edit/${sc.id}">Edit</a>
       ${sc.debug_frames_saved ? `<a class="btn" href="api/access/scanners/${sc.id}/debug.zip">Download ${sc.debug_frames_saved} saved frames</a>` : ""}</div>
     <div class="cols" style="margin-top:12px">
       <div>
-        <div id="acc-frame-${esc(sc.id)}" style="position:relative;display:none"></div>
         ${sc.has_image ? `<img alt="Last scan (code blacked out)" style="max-width:100%;border-radius:6px"
            src="api/access/scanners/${sc.id}/last.jpg?t=${encodeURIComponent(last ? last.scanned_at : "")}">
            <div class="hint">Last scan, cropped, with any code blacked out.</div>` : `<div class="muted small">No scan yet.</div>`}
@@ -937,7 +944,7 @@ function scannerCard(sc) {
             ? ` <span class="muted">(${esc(e.fingerprint)}, ${e.length} chars, ${esc(e.decoder)}, frame ${e.frames})</span>`
             : ` <span class="muted">(${e.frames} frames${e.fetch_failures ? ", " + e.fetch_failures + " failed" : ""})</span>`}</td></tr>`).join("")}</table>`
           : `<div class="muted small">None since the app started.</div>`}</div>
-    </div></div>`;
+    </div>`;
 }
 function statsText(st) {
   const parts = [st.capture === "stream" ? "video stream" : st.capture === "snapshot" ? "snapshots" : st.capture];
@@ -950,18 +957,49 @@ function statsText(st) {
 }
 async function accessScan(id, btn) {
   btn.disabled = true;
+  const sc = scannerById(id); if (sc) sc.scanning = true;
   try { await api(`access/scanners/${id}/scan`, { method: "POST" }); } catch (e) { alert(e.message); }
   setTimeout(refresh, 500);
 }
-function accessFrame(id) {
-  const sc = access.scanners.find(s => s.id === id), box = document.getElementById("acc-frame-" + id);
+// Live frame: while a scan runs it reloads every second and shows the frame the
+// scanner just checked (no extra camera fetch). When idle it is one snapshot,
+// refreshed on request, since a snapshot can take seconds on some cameras.
+const liveOpen = new Set(), liveBusy = new Set();
+const scannerById = id => (access && access.scanners.find(s => s.id === id)) || null;
+function liveBox(sc) {
   const [x1, y1, x2, y2] = [sc.crop_x1, sc.crop_y1, sc.crop_x2, sc.crop_y2].map(v => +v * 100);
-  box.style.display = "";
-  box.innerHTML = `<img alt="Live frame" style="width:100%;border-radius:6px;display:block" src="api/access/scanners/${id}/frame.jpg?t=${Date.now()}"
-      onerror="this.parentNode.innerHTML='<div class=&quot;notice&quot;>Could not fetch a frame.</div>'">
-    <div style="position:absolute;left:${x1}%;top:${y1}%;width:${x2 - x1}%;height:${y2 - y1}%;border:2px solid #2ecc71;box-sizing:border-box;pointer-events:none"></div>
-    <div class="hint">Live frame with the scan area in green (a readable code is blacked out here too).</div>`;
+  return `<div style="position:relative">
+      <img id="live-img-${esc(sc.id)}" alt="Live frame" style="width:100%;border-radius:6px;display:block;min-height:60px;background:#000">
+      <div style="position:absolute;left:${x1}%;top:${y1}%;width:${x2 - x1}%;height:${y2 - y1}%;border:2px solid #2ecc71;box-sizing:border-box;pointer-events:none"></div></div>
+    <div class="row hint" style="margin-top:4px"><span id="live-note-${esc(sc.id)}" style="flex:1">Fetching a frame…</span>
+      <button type="button" class="small" onclick="loadLive('${sc.id}')">Refresh</button></div>`;
 }
+function toggleLive(id) {
+  const box = document.getElementById("acc-live-" + id), sc = scannerById(id);
+  if (!box || !sc) return;
+  if (liveOpen.has(id)) { liveOpen.delete(id); box.innerHTML = ""; }
+  else { liveOpen.add(id); box.innerHTML = liveBox(sc); loadLive(id); }
+  document.getElementById("acc-dyn-" + id).innerHTML = scannerDynamic(sc);
+}
+function loadLive(id) {
+  const img = document.getElementById("live-img-" + id), note = document.getElementById("live-note-" + id);
+  if (!img || liveBusy.has(id)) return;
+  liveBusy.add(id);
+  const next = new Image(), t0 = Date.now();
+  next.onload = () => {
+    liveBusy.delete(id);
+    img.src = next.src;
+    const sc = scannerById(id);
+    if (note) note.textContent = (sc && sc.scanning ? "Live while scanning: the frame just checked" : "Snapshot")
+      + ` · ${new Date().toLocaleTimeString()} · took ${((Date.now() - t0) / 1000).toFixed(1)} s · scan area in green, any readable code blacked out`;
+  };
+  next.onerror = () => { liveBusy.delete(id); if (note) note.textContent = "Could not fetch a frame from the camera."; };
+  next.src = `api/access/scanners/${id}/frame.jpg?t=${Date.now()}`;
+}
+setInterval(() => {
+  if (!location.hash.startsWith("#/access") || location.hash.startsWith("#/access/")) return;
+  for (const id of liveOpen) { const sc = scannerById(id); if (sc && sc.scanning) loadLive(id); }
+}, 1000);
 async function scannerForm(id) {
   if (!access) { try { access = await api("access"); } catch (e) { location.hash = "#/access"; return; } }
   const o = id ? access.scanners.find(s => s.id === id) : null;
