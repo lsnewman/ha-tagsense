@@ -406,6 +406,7 @@ function detail(id, isRefresh) {
       <button class="danger" onclick="deleteObject('${id}')">Delete ${esc(o.name)}</button></div></div>
   </div>`;
   editorCtx = objectEditor(id);
+  lastHistoryKey = "";        // a freshly drawn page always loads its history, chart and snapshots
   initEditor(o);
   initPrint(o);
   updateDetail(o);
