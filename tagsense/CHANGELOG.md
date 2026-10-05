@@ -37,7 +37,8 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
     any MQTT client could publish a fake event (tested).
 - **Blueprint: unlock on a confirmed code.** It confirms the event, unlocks,
   waits until the lock reports unlocked, then locks again after the auto-lock
-  time (fixed, or the lock's own setting). Import it with one click from the
+  time (fixed, or the lock's own setting), with optional extra actions (e.g. a
+  notification). Import it with one click from the
   docs or the Access page.
 - **Object history in export/import:** the export now includes each object's
   last 24 hours of chart history and its learned position. Importing merges the

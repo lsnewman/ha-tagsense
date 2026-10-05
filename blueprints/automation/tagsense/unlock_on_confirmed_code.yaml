@@ -54,12 +54,16 @@ blueprint:
           max: 600
           unit_of_measurement: s
           mode: box
-    notify:
-      name: Notification
-      description: Show a persistent notification for each confirmed code.
-      default: true
+    on_confirmed:
+      name: Also do this when a code is confirmed (optional)
+      description: >-
+        Extra actions run after the code is confirmed and the unlock is sent,
+        for example a phone notification. Empty by default. Templates can use
+        `confirm.content.label` (who) and `confirm.content.code_type`
+        (rotating or static).
+      default: []
       selector:
-        boolean:
+        action:
 
 mode: queued
 max: 5
@@ -76,7 +80,6 @@ variables:
   lock_entity: !input lock_entity
   auto_lock_number: !input auto_lock_number
   auto_lock_seconds: !input auto_lock_seconds
-  notify: !input notify
   relock_after: >-
     {% set n = states(auto_lock_number) if auto_lock_number else 'unknown' %}
     {{ n | int(auto_lock_seconds | int(0)) }}
@@ -89,20 +92,12 @@ actions:
     response_variable: confirm
   - condition: template
     value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"
-  - if:
-      - condition: template
-        value_template: "{{ notify }}"
-    then:
-      - action: notify.persistent_notification
-        data:
-          title: Door
-          message: >-
-            {{ confirm.content.label }} verified ({{ confirm.content.code_type }}
-            code), confirmed by TagSense
-  # 2. Unlock, and wait until the lock actually reports unlocked.
+  # 2. Unlock, run any extra actions, and wait until the lock reports unlocked.
   - action: lock.unlock
     target:
       entity_id: "{{ lock_entity }}"
+  - choose: []
+    default: !input on_confirmed
   - wait_template: "{{ is_state(lock_entity, 'unlocked') }}"
     timeout: "00:01:00"
     continue_on_timeout: false
