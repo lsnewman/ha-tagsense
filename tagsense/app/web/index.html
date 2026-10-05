@@ -180,8 +180,11 @@ function render(isRefresh) {
 function overview() {
   if (!state.objects.length) {
     $main.innerHTML = `<div class="card"><h2>No objects yet</h2>
-      <p class="muted">Add the first thing to watch: give it a name, pick the tag ID printed on it and the camera that sees it.</p>
-      <a class="btn" href="#/new">Add object</a></div>`;
+      <p class="muted">Add the first thing to watch: give it a name, pick the tag ID printed on it and the camera that sees it.
+        Or import objects exported from another TagSense install below.</p>
+      <a class="btn" href="#/new">Add object</a></div>${transferCard()}`;
+    transferOpen = true;                    // open by default; also keeps refreshes from wiping a paste
+    toggleTransfer(true);
     return;
   }
   $main.innerHTML = `<div class="grid">${state.objects.map(o => `
@@ -194,7 +197,10 @@ function overview() {
       <div class="row"><span class="muted small" style="flex:1">checked ${ago(o.last_check)}${o.settings.enabled ? "" : " · disabled"}</span>
         <button onclick="checkNow('${o.id}', this)" ${o.settings.enabled ? "" : "disabled"}>Check now</button>
         <a class="btn" href="#/obj/${o.id}">Open</a></div>
-    </div>`).join("")}</div>
+    </div>`).join("")}</div>${transferCard()}`;
+  if (transferOpen) toggleTransfer(true);
+}
+const transferCard = () => `
     <div class="card" style="margin-top:16px"><div class="row"><h3 style="flex:1;margin:0">Export / import</h3>
       <button onclick="toggleTransfer()" id="t-toggle">Show</button></div>
       <div id="transfer" style="display:none">
@@ -207,8 +213,6 @@ function overview() {
         <textarea id="t-import" placeholder="Paste exported text here"></textarea>
         <div class="row" style="margin-top:8px"><button class="primary" onclick="importObjects()">Import</button></div>
         <div class="error" id="t-error"></div></div></div>`;
-  if (transferOpen) toggleTransfer(true);
-}
 let transferOpen = false;
 async function toggleTransfer(keep) {
   const el = document.getElementById("transfer");
@@ -241,6 +245,7 @@ async function importObjects() {
     const r = await api("import", { method: "POST", body: { text } });
     alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.`);
     document.getElementById("t-import").value = "";
+    transferOpen = false;                   // let the refresh redraw the list with the new objects
     await refresh();
   } catch (e) { err.textContent = e.message; }
 }
