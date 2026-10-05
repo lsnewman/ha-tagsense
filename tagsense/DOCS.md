@@ -293,8 +293,8 @@ across, or 4-5 px per QR module. TagSense uses the ZXing decoder, which also
 copes with an over-bright phone screen (where the white bleeds into the
 black). Ask visitors to use a medium-high screen brightness (maximum can
 make it worse) and to tilt the phone away from lights to avoid reflections.
-Use the camera's **main** stream: a sub stream has too few pixels and too
-much compression for anything but a short code held close. Real doorbell distances are not yet tested. *Keep raw scan frames*
+Use the highest-resolution stream the camera offers. A low-resolution
+stream (for example 896x672) still reads a short code held close. Real doorbell distances are not yet tested. *Keep raw scan frames*
 (per scanner, off by default) saves up to 50 frames for 24 h so they can be
 checked; turn it off afterwards, because the frames can contain readable
 codes.
