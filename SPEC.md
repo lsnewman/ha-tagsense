@@ -304,6 +304,12 @@ path to any lock.
     can't confirm either.
   - Tests cover: once only, expiry, wrong or missing token, a wrong address,
     the ingress path, and token rotation.
+  - Verified live on 2026-10-05 (0.5.0b9, development install) with a
+    `rest_command` and an `event.received` automation:
+    - A real pass scanned at the door was confirmed, and the automation ran.
+    - A fake `verified` event published with `mosquitto_pub` (made-up
+      `event_id`) triggered the automation but was refused by TagSense, and
+      the automation stopped at its condition.
 - **Topics:**
   - `tagsense/access/availability` (LWT)
   - `<sid>/event` (event entity; **never retained**, so a restart cannot
