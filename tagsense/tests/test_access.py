@@ -294,7 +294,7 @@ def test_access_off_by_default_and_not_imported(tmp_path):
                        capture_output=True, text=True)
     assert r.stdout.strip() == "ok", r.stderr
     api = Api(make_app(tmp_path))
-    assert api.state()["access"] == {"enabled": False, "error": None}
+    assert api.state()["access"] == {"enabled": False, "error": None, "scanners": []}
     for call in (lambda: api.access_status(), lambda: api.access_scan("door"),
                  lambda: api.access_create({"name": "Door"})):
         with pytest.raises(ApiError) as e:
@@ -317,6 +317,7 @@ def test_panel_manages_scanners_and_scans(tmp_path):
     sid = api.access_create({"name": "Front door", "source": "go2rtc", "go2rtc_stream": "doorbell",
                              "crop_x1": 0.4, "window_s": 5})["id"]
     assert sid == "front_door" and ScannerStore(acc.dir).load()[0].crop_x1 == 0.4
+    assert api.state()["access"]["scanners"] == [{"id": "front_door", "name": "Front door"}]   # for the nav
     m = acc.mqtt
     assert any("tagsense_access/front_door_code/config" in t for t, _, _ in m.client.published)
     api.access_scan(sid)

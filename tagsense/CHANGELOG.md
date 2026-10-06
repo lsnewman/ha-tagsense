@@ -4,13 +4,31 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
 
 ## 0.5.1 (in development)
 
+- **Detection settings moved into the panel (Settings).** The options that
+  apply to every object (shape gates, frames per check, hits and misses
+  needed, confirmation delay, frame sanity thresholds, log level) are now
+  changed under **Settings**, and take effect without a restart. On its
+  first start, 0.5.1 copies your current values from the Configuration tab,
+  so nothing changes on upgrade. After that the Configuration tab's copies
+  are ignored, and they are now optional: a new install does not show them,
+  and you can clear yours once 0.5.1 has started. A later release removes
+  them. Only `go2rtc_url`, the MQTT override and the access login
+  stay there. A bad value is refused when you save it and can never stop the
+  app from starting. Export / import now carries these settings too.
+- **New panel layout.** TagSense is now two parts, **Presence** (tagged
+  objects) and **Access** (door codes), with **Settings** beside them. On a
+  computer they sit in a sidebar, with each object and scanner listed under
+  its section; on a phone they become tabs. Buttons such as *Add object* and
+  *Add scanner* moved onto their section's page. Export / import moved to
+  **Settings → Backup**. The Access section is always listed: while it is off
+  it explains what it does and how to turn it on.
 - **Smear threshold default lowered from 0.5 to 0.2** (`sanity_min_ratio`).
   With a tight search area and the object gone, low morning sun made good
   frames score about 0.4. They were discarded as smeared, and the object read
   *unknown* for hours instead of *absent*. Real smeared frames score about
   0.01, so 0.2 still catches them. **Existing installs keep their saved value**:
   if you have seen long *unknown* periods with the *Discard rate* near 100%,
-  set `sanity_min_ratio` to 0.2 on the Configuration tab.
+  set *Smear threshold* to 0.2 in the panel under **Settings**.
 - Panel: an object's page always loads its chart, history and snapshots when
   opened. Before, returning to the page before the next check (e.g. right
   after an import) showed "No checks yet." over a full history.

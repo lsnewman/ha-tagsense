@@ -61,11 +61,17 @@ the live frame. Changes apply straight away.
   through its top edge (solid green: now; dashed cyan: at 0°). **Set current
   orientation as 0°** and **Rotation steps** are in the Settings card.
 
-### Global options
+### Detection settings (panel → Settings)
+
+These apply to every object and are changed in the panel under **Settings**,
+taking effect straight away. On the app's **Configuration** tab you only need
+`go2rtc_url` (and the MQTT override or access login, if used). The other
+options still listed there only seed **Settings** on the first start of
+0.5.1; after that, changing them on the Configuration tab does nothing.
 
 | Option | Default | Notes |
 |---|---|---|
-| `go2rtc_url` | *(empty)* | e.g. `http://<frigate-hostname>:1984`. The Frigate app's hostname is on its app page, and it changes if Frigate is reinstalled under another slug. Required if any object uses go2rtc. |
+| `go2rtc_url` | *(empty)* | **Configuration tab.** e.g. `http://<frigate-hostname>:1984`. The Frigate app's hostname is on its app page, and it changes if Frigate is reinstalled under another slug. Required if any object uses go2rtc. |
 | `max_aspect` | `2.0` | Shape gate: a read of the object's tag whose longest/shortest edge ratio is above this is rejected (gravel phantoms decode as slivers, measured 2.2-6; the real tag about 1.5 by day). 0 disables it. Use the *Tag aspect* sensor's history to set it. |
 | `min_size_ratio` | `0.5` | Shape gate: once 10 sightings are learned, a read of the object's tag smaller than this fraction of its usual size is rejected. 0 disables it. |
 | `burst_size` | `5` | Frames per check |
@@ -76,7 +82,8 @@ the live frame. Changes apply straight away.
 | `unknown_after_failures` | `2` | Consecutive checks with no usable frame before reporting unknown |
 | `sanity_min_ratio` | `0.2` | Smear threshold (see below). Lower it if *Discard rate* is high on good frames. |
 | `sanity_min_h` | `0.02` | Below this the crop is uniform (dead feed) and the frame is discarded |
-| `mqtt_*` | | Optional overrides. Leave unset to use the Supervisor's broker. |
+| `log_level` | `info` | One line per check at `info`. |
+| `mqtt_*` | | **Configuration tab.** Optional overrides. Leave unset to use the Supervisor's broker. |
 
 ## Entities
 

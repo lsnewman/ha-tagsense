@@ -232,10 +232,16 @@ burst is fetched once and judged by all of them, each with its own crop and
 tag. Different cameras are checked in parallel. The other objects' tags on a
 shared camera are recognised, so they are not logged as ignored reads.
 
-## Configuration (app options)
+## Configuration
 
-These are set on the app's **Configuration** tab, apply to every object, and
-take effect when the app restarts.
+Only `go2rtc_url`, the MQTT override and the access login are set on the
+app's **Configuration** tab (they take effect on restart). Everything else
+below applies to every object and is changed in the panel under
+**Settings**, without a restart.
+
+> **Upgrading to 0.5.1:** on its first start, 0.5.1 copies these values from
+> the Configuration tab into **Settings**. After that the Configuration tab's
+> copies of them are ignored.
 
 ### Frame source
 

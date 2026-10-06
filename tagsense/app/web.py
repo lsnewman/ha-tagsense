@@ -15,6 +15,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from . import globals as gl
 from .mqtt_ha import SETTING_KEYS
 from .objects import ConfigError, ObjectConfig, parse_one, slugify, unique_id
 from .detector import DEFAULT_FAMILY, FAMILIES, family_info
@@ -63,7 +64,10 @@ class Api:
                 "default_family": DEFAULT_FAMILY,
                 "objects": [o.status() for o in self.app.objects.values()],
                 "access": {"enabled": self.app.access is not None,
-                           "error": self.app.access_error}}
+                           "error": self.app.access_error,
+                           # names only, for the panel's navigation
+                           "scanners": [{"id": c.id, "name": c.name} for c in self.app.access.configs]
+                           if self.app.access else []}}
 
     def sources(self) -> dict:
         out = {"go2rtc": [], "ha_cameras": [], "errors": {}}
@@ -147,6 +151,28 @@ class Api:
             raise ApiError(404, "no such snapshot")
         return data
 
+    # --- global settings (the panel's Settings page) ----------------------
+
+    def globals_get(self) -> dict:
+        o = self.app.opts
+        return {"values": dict(self.app.globals), "defaults": gl.DEFAULTS,
+                "ranges": {k: [lo, hi] for k, (_, lo, hi, _) in gl.SPEC.items()},
+                "log_levels": list(gl.LOG_LEVELS),
+                # read-only, and never a password
+                "app_options": {"go2rtc_url": o.get("go2rtc_url") or "",
+                                "mqtt": f"override: {o['mqtt_host']}:{o.get('mqtt_port') or 1883}"
+                                if o.get("mqtt_host") else "the Mosquitto broker app (automatic)",
+                                "mqtt_connected": bool(self.app.connected),
+                                "access_enabled": bool(o.get("access_enabled")),
+                                "access_mqtt_username": o.get("access_mqtt_username") or ""}}
+
+    def globals_set(self, body: dict) -> dict:
+        try:
+            self.app.set_globals(body)
+        except ConfigError as e:
+            raise ApiError(400, str(e)) from None
+        return self.globals_get()
+
     # --- export / import --------------------------------------------------
 
     def export(self) -> dict:
@@ -158,7 +184,7 @@ class Api:
                     entry["settings"] = o.settings_values()
                 entry["history"] = o.export_history()      # chart log + learned position
             out.append(entry)
-        result = {"tagsense": 1, "objects": out}
+        result = {"tagsense": 1, "objects": out, "globals": dict(self.app.globals)}
         if self.app.access is not None:      # scanner settings only: never keys, passes or codes
             result["access_scanners"] = [c.to_dict() for c in self.app.access.configs]
         return result
@@ -171,9 +197,10 @@ class Api:
                 data = json.loads(body["text"])
             except ValueError as e:
                 raise ApiError(400, f"not valid JSON: {e}") from None
-        entries = data.get("objects") if isinstance(data, dict) else data
-        scanners = data.get("access_scanners") if isinstance(data, dict) else None
-        if not isinstance(entries, list) or not (entries or scanners):
+        is_dict = isinstance(data, dict)
+        entries = data.get("objects", []) if is_dict else data
+        scanners = data.get("access_scanners") if is_dict else None
+        if not isinstance(entries, list) or not (entries or scanners or (is_dict and data.get("globals"))):
             raise ApiError(400, "expected a list of objects (as exported)")
         configs = list(self.app.configs)
         by_id = {c.id: i for i, c in enumerate(configs)}
@@ -201,16 +228,28 @@ class Api:
         for oid, values in settings.items():      # check before changing anything
             if unknown := set(values) - set(SETTING_KEYS):
                 raise ApiError(400, f"{oid}: unknown setting(s) {sorted(unknown)}")
+        new_globals = data.get("globals") if is_dict else None
+        if new_globals is not None:
+            if not isinstance(new_globals, dict):
+                raise ApiError(400, "globals: expected an object")
+            try:
+                gl.validate({**self.app.globals, **new_globals})
+            except ConfigError as e:
+                raise ApiError(400, f"globals: {e}") from None
         if configs != self.app.configs:
             self._apply(configs)
         for oid, values in settings.items():
             self.settings(oid, values)
+        globals_changed = False
+        if new_globals is not None:
+            before = dict(self.app.globals)
+            globals_changed = self.app.set_globals(new_globals) != before
         history = {}
         for oid, h in histories.items():
             if o := self.app.objects.get(oid):
                 history[oid] = o.import_history(h)
         log.info("imported objects: added %s, updated %s", added or "none", updated or "none")
-        return {"added": added, "updated": updated, "history": history,
+        return {"added": added, "updated": updated, "history": history, "globals_changed": globals_changed,
                 "scanners": self._import_scanners(scanners)}
 
     def _import_scanners(self, raw) -> dict:
@@ -498,6 +537,8 @@ ROUTES = [
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/chart", "chart"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots", "snapshots"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots/(?P<name>\d+)\.jpg", "snapshot"),
+    ("GET", r"/api/globals", "globals_get"),
+    ("PATCH", r"/api/globals", "globals_set"),
     ("GET", r"/api/export", "export"),
     ("POST", r"/api/import", "import_"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/frame\.jpg", "frame"),

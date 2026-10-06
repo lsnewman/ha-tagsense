@@ -21,11 +21,39 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-header { display: flex; align-items: center; gap: 12px; padding: 14px 20px;
-  border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 5; }
-header h1 { font-size: 18px; margin: 0; font-weight: 600; }
-header .spacer { flex: 1; }
-main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+/* shell: a sidebar on wide screens, a tab bar on phones (one markup, restyled below) */
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+nav#nav { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--card);
+  border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; }
+nav .brand { padding: 0 10px 14px; }
+nav .brand a { font-size: 18px; font-weight: 600; color: var(--text); }
+nav .tab { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; color: var(--text);
+  font-weight: 600; }
+nav .tab:hover, nav .sub a:hover { background: var(--bg); }
+nav .tab.active { background: var(--accent); color: var(--accent-text); }
+nav .tab .badge { margin-left: auto; font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 999px;
+  background: var(--chip-absent); color: var(--muted); }
+nav .sub { display: flex; flex-direction: column; margin: 2px 0 8px 12px; }
+nav .sub a { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 6px;
+  color: var(--text); font-size: 13px; }
+nav .sub a.active { background: var(--bg); font-weight: 600; }
+nav .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+nav .dot.present { background: var(--ok); } nav .dot.unknown { background: var(--warn); }
+nav .who { margin-top: auto; padding: 14px 10px 0; }
+body.solo .shell { display: block; } body.solo nav#nav { display: none; }
+main { max-width: 1100px; width: 100%; margin: 0 auto; padding: 20px; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.toolbar h2 { font-size: 20px; margin: 0; flex: 1; }
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 16px; }
+.savebar { position: sticky; bottom: 0; z-index: 3; box-shadow: 0 -2px 8px rgba(0,0,0,.08); }
+@media (max-width: 859px) {
+  .shell { display: block; }
+  nav#nav { position: sticky; z-index: 5; height: auto; flex-direction: row; align-items: center; overflow-x: auto;
+    border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 12px; gap: 4px; }
+  nav .brand { display: none; }     /* Home Assistant already shows the title on a phone */
+  nav .sub, nav .who { display: none; }
+  nav .tab { padding: 6px 10px; white-space: nowrap; }
+}
 a { color: var(--accent); text-decoration: none; }
 button, .btn { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
   padding: 6px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
@@ -51,7 +79,7 @@ button:disabled { opacity: .5; cursor: default; }
 table { table-layout: fixed; }
 .cols { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } main { padding: 12px; }
-  header { padding: 10px 12px; } .card { padding: 12px; } }
+  .card { padding: 12px; } }
 .stack > * + * { margin-top: 16px; }
 table { width: 100%; border-collapse: collapse; }
 td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -104,16 +132,19 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
 </style>
 </head>
 <body>
-<header>
-  <h1><a href="#/" style="color:inherit">TagSense</a></h1>
-  <span class="muted small" id="version"></span>
-  <span class="muted small" id="whoami" style="margin-left:10px"></span>
-  <span class="spacer"></span>
-  <a class="btn" href="#/pass" id="pass-link" style="display:none">My pass</a>
-  <a class="btn" href="#/access" id="access-link" style="display:none">Access</a>
-  <a class="btn" href="#/new">Add object</a>
-</header>
+<div class="shell">
+<nav id="nav">
+  <div class="brand"><a href="#/">TagSense</a> <span class="muted small" id="version"></span></div>
+  <a class="tab" href="#/" data-sec="presence">Presence</a>
+  <div class="sub" id="nav-objects"></div>
+  <a class="tab" href="#/access" data-sec="access">Access <span class="badge" id="access-off" style="display:none">off</span></a>
+  <div class="sub" id="nav-scanners"></div>
+  <a class="tab" href="#/settings" data-sec="settings">Settings</a>
+  <a class="tab" href="#/pass" data-sec="pass">My pass</a>
+  <div class="who muted small" id="whoami"></div>
+</nav>
 <main id="main"><div class="loading">Loading…</div></main>
+</div>
 
 <script>
 "use strict";
@@ -207,26 +238,44 @@ async function passPage(w) {
   passTick = setInterval(() => { left -= 1; show(); }, 1000);
   passTimer = setTimeout(() => passPage(w), (left + 0.4) * 1000);
 }
-function showAccessLink() {
-  const a = state.access || {};
-  document.getElementById("access-link").style.display = a.enabled || a.error ? "" : "none";
+// ---------- navigation ----------------------------------------------------
+// One markup: a sidebar on wide screens, a tab bar on phones (CSS only).
+function section(h) {
+  if (h.startsWith("/access")) return "access";
+  if (h === "/settings") return "settings";
+  if (h === "/pass") return "pass";
+  return "presence";
+}
+function renderNav() {
+  const h = location.hash.replace(/^#/, "") || "/";
+  const sec = section(h), a = state.access || {};
+  document.querySelectorAll("nav .tab").forEach(t => t.classList.toggle("active", t.dataset.sec === sec));
+  document.getElementById("access-off").style.display = a.enabled ? "none" : "";
+  const objId = (h.match(/^\/(?:obj|edit)\/([a-z0-9_]+)$/) || [])[1];
+  document.getElementById("nav-objects").innerHTML = state.objects.map(o =>
+    `<a href="#/obj/${o.id}" class="${o.id === objId ? "active" : ""}" title="${esc(o.state)}">
+      <i class="dot ${esc(o.state)}"></i>${esc(o.name)}</a>`).join("");
+  const scId = (h.match(/^\/access\/edit\/([a-z0-9_]+)$/) || [])[1];
+  document.getElementById("nav-scanners").innerHTML = (a.scanners || []).map(sc =>
+    `<a href="#/access/edit/${sc.id}" class="${sc.id === scId ? "active" : ""}">${esc(sc.name)}</a>`).join("");
 }
 async function refresh() {
   try { state = await api("state"); } catch (e) { return; }
-  showAccessLink();
+  renderNav();
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
   render(true);
 }
 function schedule(ms = 3000) { clearInterval(timer); timer = setInterval(refresh, ms); }
 
 // ---------- router --------------------------------------------------------
-function route() { editorDirty = false; clearTimeout(passTimer); clearInterval(passTick); render(false); }
+function route() { editorDirty = false; clearTimeout(passTimer); clearInterval(passTick); renderNav(); render(false); }
 window.addEventListener("hashchange", route);
 
 function render(isRefresh) {
   const h = location.hash.replace(/^#/, "") || "/";
   let m;
-  if (h === "/") return isRefresh && transferOpen ? null : overview();
+  if (h === "/") return overview();
+  if (h === "/settings") return isRefresh ? null : settingsPage();
   if (h === "/new") return isRefresh ? null : objectForm(null);
   if ((m = h.match(/^\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : objectForm(m[1]);
   if ((m = h.match(/^\/obj\/([a-z0-9_]+)$/))) return detail(m[1], isRefresh);
@@ -238,17 +287,17 @@ function render(isRefresh) {
 }
 
 // ---------- overview ------------------------------------------------------
+const presenceBar = `<div class="toolbar"><h2>Presence</h2><a class="btn primary" href="#/new">Add object</a></div>`;
 function overview() {
   if (!state.objects.length) {
-    $main.innerHTML = `<div class="card"><h2>No objects yet</h2>
-      <p class="muted">Add the first thing to watch: give it a name, pick the tag ID printed on it and the camera that sees it.
-        Or import objects exported from another TagSense install below.</p>
-      <a class="btn" href="#/new">Add object</a></div>${transferCard()}`;
-    transferOpen = true;                    // open by default; also keeps refreshes from wiping a paste
-    toggleTransfer(true);
+    $main.innerHTML = `${presenceBar}<div class="card"><h2>No objects yet</h2>
+      <p class="muted">TagSense Presence tells Home Assistant whether a tagged object (a bin, a car, a chair...) is in its
+        usual place. Add the first thing to watch: give it a name, pick the tag ID printed on it and the camera that sees it.
+        Moving from another TagSense install? Import its objects under <a href="#/settings">Settings → Backup</a>.</p>
+      <a class="btn primary" href="#/new">Add object</a></div>`;
     return;
   }
-  $main.innerHTML = `<div class="grid">${state.objects.map(o => `
+  $main.innerHTML = `${presenceBar}<div class="grid">${state.objects.map(o => `
     <div class="card">
       <div class="row"><h2 style="flex:1"><a href="#/obj/${o.id}">${esc(o.name)}</a></h2>${chip(o.state, "")}</div>
       <div class="muted small">${esc(tagLabel(o))} · ${esc(o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity)} · ${esc(o.reason)}</div>
@@ -258,14 +307,99 @@ function overview() {
       <div class="row"><span class="muted small" style="flex:1">checked ${ago(o.last_check)}${o.settings.enabled ? "" : " · disabled"}</span>
         <button onclick="checkNow('${o.id}', this)" ${o.settings.enabled ? "" : "disabled"}>Check now</button>
         <a class="btn" href="#/obj/${o.id}">Open</a></div>
-    </div>`).join("")}</div>${transferCard()}`;
-  if (transferOpen) toggleTransfer(true);
+    </div>`).join("")}</div>`;
+}
+
+// ---------- settings --------------------------------------------------------
+// Detection settings shared by every object. Labels and hints match the app's option names.
+const GLOBAL_GROUPS = [
+  ["Detection", "Which reads of a tag count.", [
+    ["max_aspect", "Shape gate, max aspect", "A read counts only if the tag's longest edge is at most this many times its shortest. 0 turns it off.", 0.1],
+    ["min_size_ratio", "Shape gate, min size ratio", "Once 10 sightings are learned, reads smaller than this fraction of the usual tag size are rejected. 0 turns it off.", 0.05]]],
+  ["Checks and decision", "How each check runs and when the state changes.", [
+    ["burst_size", "Frames per check", "How many frames each check fetches.", 1],
+    ["burst_interval_s", "Seconds between frames", "0 grabs them back to back.", 0.1],
+    ["present_min_hits", "Hits needed for present", "Frames in one check that must show the tag. At most the frames per check.", 1],
+    ["absent_checks", "Misses needed for absent", "Clean misses in a row before reporting absent.", 1],
+    ["confirm_delay_s", "Confirmation delay (s)", "Between the confirmation checks after Check now finds no tag.", 1],
+    ["unknown_after_failures", "Failures before unknown", "Checks in a row with no usable frame before the state becomes unknown.", 1]]],
+  ["Frame sanity", "Broken frames are discarded, never counted as a miss.", [
+    ["sanity_min_ratio", "Smear threshold", "Frames scoring below this are treated as smeared. Real smears score about 0.01.", 0.01],
+    ["sanity_min_h", "Dead-feed threshold", "Below this the crop is uniform (a black or dead feed).", 0.01]]],
+];
+let globalsData = null;
+async function settingsPage() {
+  $main.innerHTML = `<div class="toolbar"><h2>Settings</h2></div><div class="stack">
+    <div id="g-form"><div class="card"><div class="loading">Loading…</div></div></div>${transferCard()}</div>`;
+  loadExport();
+  try { globalsData = await api("globals"); } catch (e) {
+    document.getElementById("g-form").innerHTML = `<div class="card error">${esc(e.message)}</div>`; return;
+  }
+  drawGlobals();
+}
+function drawGlobals() {
+  const g = globalsData, v = g.values, ao = g.app_options;
+  const field = ([k, label, hint, step]) => {
+    const [lo, hi] = g.ranges[k];
+    return `<div><label for="g-${k}">${esc(label)}</label>
+      <input id="g-${k}" type="number" min="${lo}" max="${hi}" step="${step}" value="${v[k]}" oninput="globalsDirty()">
+      <div class="hint">${esc(hint)} Range ${lo}-${hi}${v[k] !== g.defaults[k] ? `, default ${g.defaults[k]}` : ""}.</div></div>`;
+  };
+  document.getElementById("g-form").innerHTML = `<form id="gf" class="stack" onsubmit="saveGlobals(event)">
+    ${GLOBAL_GROUPS.map(([title, sub, fields]) => `<div class="card"><h3>${esc(title)}</h3>
+      <div class="hint" style="margin:-6px 0 4px">${esc(sub)}</div>
+      <div class="fields">${fields.map(field).join("")}</div></div>`).join("")}
+    <div class="card"><h3>Logging</h3><div class="fields"><div><label for="g-log_level">Log level</label>
+      <select id="g-log_level" onchange="globalsDirty()">${g.log_levels.map(l =>
+        `<option ${l === v.log_level ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <div class="hint">At info there is one line per check.</div></div></div></div>
+    <div class="card savebar"><div class="row">
+      <button class="primary" type="submit" id="g-save" disabled>Save</button>
+      <button type="button" onclick="drawGlobals()">Undo</button>
+      <button type="button" onclick="globalsDefaults()">Defaults</button>
+      <span class="muted small" id="g-msg">These apply to every object. Saving restarts the checks (a few seconds).</span></div>
+      <div class="error" id="g-error"></div></div>
+    <div class="card"><h3>App options <span class="muted small">(Configuration tab)</span></h3>
+      <table class="kv small">
+        <tr><td>go2rtc URL</td><td>${ao.go2rtc_url ? esc(ao.go2rtc_url) : `<span class="muted">not set: go2rtc streams will not work</span>`}</td></tr>
+        <tr><td>MQTT</td><td>${esc(ao.mqtt)} · ${ao.mqtt_connected ? "connected" : "<b>not connected</b>"}</td></tr>
+        <tr><td>Access</td><td>${ao.access_enabled ? `on${ao.access_mqtt_username ? `, MQTT login <code>${esc(ao.access_mqtt_username)}</code>` : ""}` : "off"}</td></tr></table>
+      <div class="hint">Only these (and the MQTT override) are set on the app's Configuration tab; a change there needs a restart.
+        The detection options also on that tab only seeded this page on the first start of 0.5.1.</div></div>
+  </form>`;
+}
+function globalsForm() {
+  const out = { log_level: document.getElementById("g-log_level").value };
+  for (const [, , fields] of GLOBAL_GROUPS) for (const [k] of fields) out[k] = +document.getElementById("g-" + k).value;
+  return out;
+}
+function globalsDirty() {
+  const f = globalsForm(), v = globalsData.values;
+  const dirty = Object.keys(f).some(k => f[k] !== v[k]);
+  document.getElementById("g-save").disabled = !dirty;
+  document.getElementById("g-msg").textContent = dirty ? "Unsaved changes." : "";
+}
+function globalsDefaults() {
+  for (const [k, d] of Object.entries(globalsData.defaults)) document.getElementById("g-" + k).value = d;
+  globalsDirty();
+}
+async function saveGlobals(e) {
+  e.preventDefault();
+  const f = globalsForm(), v = globalsData.values, err = document.getElementById("g-error");
+  const body = Object.fromEntries(Object.entries(f).filter(([k, x]) => x !== v[k]));
+  err.textContent = "";
+  document.getElementById("g-save").disabled = true;
+  try {
+    globalsData = await api("globals", { method: "PATCH", body });
+    drawGlobals();
+    document.getElementById("g-msg").textContent = "Saved: " + Object.keys(body).join(", ") + ".";
+    loadExport();
+  } catch (ex) { err.textContent = ex.message; document.getElementById("g-save").disabled = false; }
 }
 const transferCard = () => `
-    <div class="card" style="margin-top:16px"><div class="row"><h3 style="flex:1;margin:0">Export / import</h3>
-      <button onclick="toggleTransfer()" id="t-toggle">Show</button></div>
-      <div id="transfer" style="display:none">
-        <p class="muted small">All objects and their settings as text, to keep as a backup or move to another install
+    <div class="card"><h3>Backup: export / import</h3>
+      <div id="transfer">
+        <p class="muted small">All objects, their settings and the detection settings above as text, to keep as a backup or move to another install
           (for example between TagSense and TagSense (dev)). It includes each object's last 24 hours of chart history and its
           learned position. Importing adds new objects and updates ones with the same id; objects not in the text are kept.
           History is merged without doubling, and the learned position is taken only if the imported one is newer.
@@ -277,16 +411,9 @@ const transferCard = () => `
         <textarea id="t-import" placeholder="Paste exported text here"></textarea>
         <div class="row" style="margin-top:8px"><button class="primary" onclick="importObjects()">Import</button></div>
         <div class="error" id="t-error"></div></div></div>`;
-let transferOpen = false;
-async function toggleTransfer(keep) {
-  const el = document.getElementById("transfer");
-  if (!keep) transferOpen = el.style.display === "none";
-  el.style.display = transferOpen ? "" : "none";
-  document.getElementById("t-toggle").textContent = transferOpen ? "Hide" : "Show";
-  if (transferOpen) {
-    try { document.getElementById("t-export").value = JSON.stringify(await api("export"), null, 2); }
-    catch (e) { document.getElementById("t-error").textContent = e.message; }
-  }
+async function loadExport() {
+  try { document.getElementById("t-export").value = JSON.stringify(await api("export"), null, 2); }
+  catch (e) { document.getElementById("t-error").textContent = e.message; }
 }
 async function copyExport() {
   const t = document.getElementById("t-export");
@@ -313,10 +440,10 @@ async function importObjects() {
     const scText = sc.skipped ? `\nScanners not imported: ${sc.skipped}.`
       : (sc.added || sc.updated) ? `\nScanners added: ${(sc.added || []).join(", ") || "none"}; updated: ${(sc.updated || []).join(", ") || "none"}.` : "";
     alert(`Imported. Added: ${r.added.join(", ") || "none"}. Updated: ${r.updated.join(", ") || "none"}.` +
-      (hist ? `\nHistory merged: ${hist}.` : "") + scText);
+      (hist ? `\nHistory merged: ${hist}.` : "") + scText + (r.globals_changed ? "\nDetection settings updated." : ""));
     document.getElementById("t-import").value = "";
-    transferOpen = false;                   // let the refresh redraw the list with the new objects
     await refresh();
+    settingsPage();
   } catch (e) { err.textContent = e.message; }
 }
 async function checkNow(id, btn) {
@@ -969,9 +1096,29 @@ function eventDetail(e) {
 async function accessPage(isRefresh) {
   const a = state.access || {};
   if (!a.enabled) {
-    $main.innerHTML = `<div class="card" style="max-width:640px"><h2>Access</h2>
-      ${a.error ? `<div class="notice alert">The access feature did not start: ${esc(a.error)}</div>` : ""}
-      <p class="muted">Access is turned on with <b>access_enabled</b> and its own MQTT login on the app's Configuration tab. See the Documentation tab.</p></div>`;
+    $main.innerHTML = `<div class="toolbar"><h2>Access</h2></div>
+      ${a.error ? `<div class="notice alert">Access is turned on but did not start: ${esc(a.error)}</div>` : ""}
+      <div class="card" style="max-width:720px">
+        <h3>Door codes, checked by your doorbell camera</h3>
+        <p>A visitor rings and holds up a QR code on their phone. TagSense checks it and reports a <b>verified</b>
+          event (or why not) to Home Assistant. There are two kinds of code:</p>
+        <ul>
+          <li><b>Passes</b> for people who come and go: each belongs to a Home Assistant user, who opens it from this
+            sidebar entry. The code changes every 30 s and each one works once.</li>
+          <li><b>Static codes</b> to send to a visitor or tradesperson, with an expiry and/or a number of uses.</li>
+        </ul>
+        <p>TagSense <b>never unlocks anything</b>. Your automations decide what a verified event does; a ready-made
+          blueprint confirms each event with TagSense before unlocking.</p>
+        <h3 style="margin-top:16px">Turning it on <span class="muted small">(off by default)</span></h3>
+        <ol>
+          <li>In the <b>Mosquitto broker</b> app, add a login under <i>Logins</i> just for this, for example
+            <code>tagsense_access</code> with a long random password. Never reuse it anywhere else.</li>
+          <li>On TagSense's <b>Configuration</b> tab, turn on <code>access_enabled</code> and set
+            <code>access_mqtt_username</code> / <code>access_mqtt_password</code> to that login.</li>
+          <li>Restart TagSense, then come back here to add the doorbell camera as a scanner.</li>
+        </ol>
+        <p class="muted small">Presence is not affected either way. The app's <b>Documentation</b> tab has the full details,
+          including what this does and does not protect against.</p></div>`;
     return;
   }
   try { access = await api("access"); } catch (e) { if (!isRefresh) $main.innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
@@ -986,8 +1133,7 @@ async function accessPage(isRefresh) {
     }
   }
   $main.innerHTML = `<div id="acc-root" data-ids="${esc(access.scanners.map(sc => sc.id).join(","))}">
-    <div class="row" style="margin-bottom:12px"><h2 style="flex:1;margin:0">Access</h2>
-      <a class="btn" href="#/access/new">Add scanner</a></div>
+    <div class="toolbar"><h2>Access</h2><a class="btn primary" href="#/access/new">Add scanner</a></div>
     ${access.mqtt_connected ? "" : `<div class="notice alert">The access MQTT connection is down: check access_mqtt_username / access_mqtt_password and the broker log.</div>`}
     <div class="notice small">TagSense verifies codes and reports events. It never unlocks anything: your Home Assistant automations decide what a <b>verified</b> event does.</div>
     <div id="acc-codes"><div class="card"><div class="loading">Loading codes…</div></div></div>
@@ -1340,14 +1486,13 @@ async function deleteScanner(id) {
 (async () => {
   const w = await showWhoami();
   if (!w || !w.admin) {                 // non-admins (or unknown): their pass, nothing else
-    document.querySelectorAll("header .btn").forEach(b => b.style.display = "none");
+    document.body.classList.add("solo");
     window.removeEventListener("hashchange", route);
     return passPage(w);
   }
-  document.getElementById("pass-link").style.display = "";
   try { state = await api("state"); } catch (e) { $main.innerHTML = `<div class="loading">Could not reach TagSense: ${esc(e.message)}</div>`; }
   document.getElementById("version").textContent = state.version ? "v" + state.version : "";
-  showAccessLink();
+  renderNav();
   render(false);
   schedule();
 })();

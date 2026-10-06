@@ -9,39 +9,39 @@ configuration:
     name: Shape gate, max aspect
     description: >-
       A read of an object's tag counts only if its longest edge is at most
-      this many times its shortest. 0 turns it off.
+      this many times its shortest. 0 turns it off. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   min_size_ratio:
     name: Shape gate, min size ratio
     description: >-
       Once 10 sightings are learned, reads smaller than this fraction of the
-      usual tag size are rejected. 0 turns it off.
+      usual tag size are rejected. 0 turns it off. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   burst_size:
     name: Frames per check
-    description: How many frames each check fetches (1-20).
+    description: How many frames each check fetches (1-20). Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   burst_interval_s:
     name: Seconds between frames
-    description: Spacing between the frames of one check. 0 grabs them back to back.
+    description: Spacing between the frames of one check. 0 grabs them back to back. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   present_min_hits:
     name: Hits needed for present
-    description: Frames in one check that must show the tag before reporting present (1-3).
+    description: Frames in one check that must show the tag before reporting present (1-3). Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   absent_checks:
     name: Misses needed for absent
-    description: Consecutive clean misses before reporting absent (1-20).
+    description: Consecutive clean misses before reporting absent (1-20). Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   confirm_delay_s:
     name: Confirmation delay
-    description: Seconds between confirmation checks after Check now finds no tag.
+    description: Seconds between confirmation checks after Check now finds no tag. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   unknown_after_failures:
     name: Failures before unknown
-    description: Consecutive checks with no usable frame before the state becomes unknown (1-5).
+    description: Consecutive checks with no usable frame before the state becomes unknown (1-5). Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   sanity_min_ratio:
     name: Smear threshold
-    description: Frames scoring below this are treated as smeared and discarded.
+    description: Frames scoring below this are treated as smeared and discarded. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   sanity_min_h:
     name: Dead-feed threshold
-    description: Below this the crop is uniform (a black or dead feed) and the frame is discarded.
+    description: Below this the crop is uniform (a black or dead feed) and the frame is discarded. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   log_level:
     name: Log level
-    description: At info there is one line per check.
+    description: At info there is one line per check. Moved to the TagSense panel (Settings). This is read only once, on the first start of 0.5.1, and can then be cleared.
   mqtt_host:
     name: MQTT host (override)
     description: Only to use a broker other than the Mosquitto app. Leave empty otherwise.
