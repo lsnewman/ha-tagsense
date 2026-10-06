@@ -74,7 +74,7 @@ the live frame. Changes apply straight away.
 | `absent_checks` | `3` | Consecutive clean-miss checks before reporting absent |
 | `confirm_delay_s` | `45` | Delay between confirmation checks after a *Check now* miss |
 | `unknown_after_failures` | `2` | Consecutive checks with no usable frame before reporting unknown |
-| `sanity_min_ratio` | `0.5` | Smear threshold (see below) |
+| `sanity_min_ratio` | `0.2` | Smear threshold (see below). Lower it if *Discard rate* is high on good frames. |
 | `sanity_min_h` | `0.02` | Below this the crop is uniform (dead feed) and the frame is discarded |
 | `mqtt_*` | | Optional overrides. Leave unset to use the Supervisor's broker. |
 

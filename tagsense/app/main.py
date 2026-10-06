@@ -34,7 +34,7 @@ DEFAULT_OPTIONS = {
     "absent_checks": 3,
     "confirm_delay_s": 45,
     "unknown_after_failures": 2,
-    "sanity_min_ratio": 0.5,
+    "sanity_min_ratio": 0.2,
     "sanity_min_h": 0.02,
     "log_level": "info",
     "access_enabled": False,

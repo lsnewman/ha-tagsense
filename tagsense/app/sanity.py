@@ -18,7 +18,7 @@ import numpy as np
 
 from .detector import DEFAULT_CROP, Crop, crop_pixels
 
-DEFAULT_MIN_RATIO = 0.5
+DEFAULT_MIN_RATIO = 0.2   # smear scores ~0.01; real scenes went down to 0.39 (SPEC.md)
 DEFAULT_MIN_H = 0.02   # below this the crop is effectively uniform (black/dead feed)
 
 

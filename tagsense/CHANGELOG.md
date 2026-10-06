@@ -2,6 +2,19 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.1 (in development)
+
+- **Smear threshold default lowered from 0.5 to 0.2** (`sanity_min_ratio`).
+  With a tight search area and the object gone, low morning sun made good
+  frames score about 0.4. They were discarded as smeared, and the object read
+  *unknown* for hours instead of *absent*. Real smeared frames score about
+  0.01, so 0.2 still catches them. **Existing installs keep their saved value**:
+  if you have seen long *unknown* periods with the *Discard rate* near 100%,
+  set `sanity_min_ratio` to 0.2 on the Configuration tab.
+- Panel: an object's page always loads its chart, history and snapshots when
+  opened. Before, returning to the page before the next check (e.g. right
+  after an import) showed "No checks yet." over a full history.
+
 ## 0.5.0
 
 **Upgrading:** nothing changes for your objects unless you opt in. Existing

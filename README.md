@@ -265,7 +265,7 @@ take effect when the app restarts.
 
 | Option | Default | What it does |
 |---|---|---|
-| `sanity_min_ratio` | `0.5` | Rejects smeared frames. The score is the vertical pixel variation divided by the horizontal variation within the crop. Normal scenes, dark ones included, score about 1.0. Smeared vertical-streak frames score about 0.0. Raise it to reject more aggressively, lower it if good frames are being discarded (watch *Discard rate*). |
+| `sanity_min_ratio` | `0.2` | Rejects smeared frames. The score is the vertical pixel variation divided by the horizontal variation within the crop. Most scenes score about 1.0, but a tight crop of an empty, streaky scene can drop to about 0.4 (seen with low morning sun). Smeared vertical-streak frames score about 0.0. Raise it to reject more aggressively, lower it if good frames are being discarded (watch *Discard rate*). Until 0.5.0 the default was 0.5. |
 | `sanity_min_h` | `0.02` | Rejects frames where the crop is effectively uniform, such as a black or dead feed. These count as unusable, not as "absent". Real night frames carry sensor noise well above this. |
 
 ### Other
