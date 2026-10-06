@@ -2,7 +2,12 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
-## 0.5.1 (in development)
+## 0.5.1
+
+**Upgrading:** nothing to do. Your detection settings are copied into the
+panel's new **Settings** page on the first start, and everything else carries
+on as before. To get the unlock blueprint's support for several locks, import
+it again (your automation keeps its settings).
 
 - **Documentation site:** <https://lsnewman.github.io/ha-tagsense/>, built
   from the repository's `docs/` folder and published when a release reaches
