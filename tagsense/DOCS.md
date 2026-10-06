@@ -151,6 +151,26 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
   the accepted reads; compare with `max_aspect`), sanity
   ratio, miss streak, crop brightness and contrast.
 
+## Using it in automations
+
+Each object's page has a **Use in automations** card: its entity ids (read
+from Home Assistant, so renamed entities show their real ids) and
+ready-made automations to paste into a new automation's YAML editor (not in
+place at a set time, gone for a long time, back in place, back but turned,
+and check straight away when something else happens). The main entity is
+the *In place* binary sensor: `on` in its usual place, `off` gone
+(confirmed), unavailable while unknown.
+
+## Health
+
+The panel's **Health** page lists anything that needs a look (MQTT down, a
+camera with no recent frame, an object stuck at unknown, a high discard rate,
+a locked-out scanner), with each camera's and object's last 24 hours, the
+recent log and a **Download debug bundle** button. The bundle holds the log,
+settings, objects' status and checks, and the scanners' settings and recent
+events. Passwords, tokens and keys are hidden, and nothing from the access
+code store (keys, passes, codes) is included.
+
 ## Rotation: "has it been turned round?"
 
 There is no built-in "turned" sensor: what counts as turned is up to you.
@@ -500,10 +520,14 @@ Then, in the automation, before the action that matters:
           entity_id: lock.front_door
 ```
 
-**Or use the blueprint**, which does all of this for a lock: it confirms
-the event, unlocks, waits until the lock reports unlocked, waits the auto-lock
-time (fixed, or read from the lock's own auto-lock setting), and locks again
-if the lock is still unlocked. It still needs the `rest_command` above.
+**Or use the blueprint**, which does all of this for one lock or several
+(for example a deadbolt and a handle lock on the same door): it confirms the
+event, unlocks them all, waits until one reports unlocked (at most a minute,
+so one slow or offline lock cannot hold up the rest), waits the auto-lock
+time (fixed, or read from a lock's own auto-lock setting), and locks again
+every one that is still unlocked. It still needs the `rest_command` above.
+To get a newer version, import it again from the same link: automations made
+from it keep their settings.
 
 [![Import the TagSense unlock blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Flsnewman%2Fha-tagsense%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftagsense%2Funlock_on_confirmed_code.yaml)
 

@@ -38,6 +38,7 @@ nav .sub a { display: flex; align-items: center; gap: 8px; padding: 4px 10px; bo
   color: var(--text); font-size: 13px; }
 nav .sub a.active { background: var(--bg); font-weight: 600; }
 nav .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+nav .tab .badge.warn { background: var(--chip-unknown); color: var(--warn); }
 nav .dot.present { background: var(--ok); } nav .dot.unknown { background: var(--warn); }
 nav .who { margin-top: auto; padding: 14px 10px 0; }
 body.solo .shell { display: block; } body.solo nav#nav { display: none; }
@@ -147,6 +148,7 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
   <a class="tab" href="#/access" data-sec="access">Access <span class="badge" id="access-off" style="display:none">off</span></a>
   <div class="sub" id="nav-scanners"></div>
   <a class="tab" href="#/settings" data-sec="settings">Settings</a>
+  <a class="tab" href="#/health" data-sec="health">Health <span class="badge warn" id="health-badge" style="display:none"></span></a>
   <a class="tab" href="#/pass" data-sec="pass">My pass</a>
   <div class="who muted small" id="whoami"></div>
 </nav>
@@ -225,14 +227,14 @@ async function passPage(w) {
   if (!info.available || !info.has_pass) {
     $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto"><h2>${info.available ? "No pass yet" : "Nothing here for you"}</h2>
       <p class="muted">${info.available
-        ? "You don't have a door pass. Ask a Home Assistant admin to add one (TagSense → Access → Passes)."
+        ? "You don't have a pass. Ask a Home Assistant admin to add one (TagSense → Access → Passes)."
         : "TagSense's settings are for Home Assistant admins."}</p></div>`;
     return;
   }
   $main.innerHTML = `<div class="card" style="max-width:520px;margin:auto;text-align:center">
     <h2 style="margin-bottom:4px">${esc(info.label)}</h2>
-    <div class="muted small">Ring the doorbell, then hold this up to the camera.</div>
-    <img id="pass-img" alt="Your door pass" src="api/pass.png?t=${Date.now()}${passInverted() ? "&invert=1" : ""}"
+    <div class="muted small">When the scan starts, hold this up to the camera.</div>
+    <img id="pass-img" alt="Your pass" src="api/pass.png?t=${Date.now()}${passInverted() ? "&invert=1" : ""}"
       style="width:100%;max-width:440px;margin:14px auto;display:block;background:${passInverted() ? "#000" : "#fff"};border-radius:10px">
     <div class="small"><span id="pass-left"></span></div>
     <label class="inline small" style="margin-top:8px"><input type="checkbox" ${passInverted() ? "checked" : ""}
@@ -259,6 +261,7 @@ function showShortcut() {
 function section(h) {
   if (h.startsWith("/access")) return "access";
   if (h === "/settings") return "settings";
+  if (h === "/health") return "health";
   if (h === "/pass") return "pass";
   return "presence";
 }
@@ -267,6 +270,9 @@ function renderNav() {
   const sec = section(h), a = state.access || {};
   document.querySelectorAll("nav .tab").forEach(t => t.classList.toggle("active", t.dataset.sec === sec));
   document.getElementById("access-off").style.display = a.enabled ? "none" : "";
+  const issues = state.objects.filter(o => o.alert || (o.state === "unknown" && o.settings.enabled && o.last_check)).length + (a.error ? 1 : 0);
+  const hb = document.getElementById("health-badge");
+  hb.textContent = issues; hb.style.display = issues ? "" : "none";
   const objId = (h.match(/^\/(?:obj|edit)\/([a-z0-9_]+)$/) || [])[1];
   document.getElementById("nav-objects").innerHTML = state.objects.map(o =>
     `<a href="#/obj/${o.id}" class="${o.id === objId ? "active" : ""}" title="${esc(o.state)}">
@@ -336,6 +342,7 @@ function render(isRefresh) {
   let m;
   if (h === "/") return overview();
   if (h === "/settings") return isRefresh ? null : settingsPage();
+  if (h === "/health") return healthPage(isRefresh);
   if (h === "/new") return isRefresh ? null : objectForm(null);
   if ((m = h.match(/^\/edit\/([a-z0-9_]+)$/))) return isRefresh ? null : objectForm(m[1]);
   if ((m = h.match(/^\/obj\/([a-z0-9_]+)$/))) return detail(m[1], isRefresh);
@@ -368,6 +375,78 @@ function overview() {
         <button onclick="checkNow('${o.id}', this)" ${o.settings.enabled ? "" : "disabled"}>Check now</button>
         <a class="btn" href="#/obj/${o.id}">Open</a></div>
     </div>`).join("")}</div>`;
+}
+
+// ---------- health ----------------------------------------------------------
+// One page for "is everything working?": connections, cameras, each object's
+// last 24 hours, access scanners, recent log lines and a debug bundle.
+const pct = v => v === null || v === undefined ? "–" : v + "%";
+const secs = v => v === null || v === undefined ? "never" : v < 90 ? Math.round(v) + " s ago" : ago(new Date(Date.now() - v * 1000).toISOString());
+function healthProblems(h) {
+  const p = [];
+  if (!h.mqtt_connected) p.push("The MQTT connection is down: Home Assistant is not getting updates.");
+  if (!h.go2rtc_configured && h.objects.length) p.push("go2rtc_url is not set: objects on go2rtc streams cannot be checked.");
+  for (const c of h.cameras) if (c.last_error && (c.last_frame_age_s === null || c.last_frame_age_s > 600))
+    p.push(`Camera ${c.name}: no frame recently (${c.last_error}).`);
+  for (const o of h.objects) {
+    if (o.alert) p.push(`${o.name}: ${o.alert}`);
+    else if (o.enabled && o.state === "unknown" && o.last_check) p.push(`${o.name} is unknown: ${o.reason}.`);
+    if (o.day.discard_pct >= 50) p.push(`${o.name}: ${o.day.discard_pct}% of frames discarded in 24 h. If they look fine, lower the smear threshold in Settings.`);
+  }
+  if (h.access && h.access.error) p.push(`Access did not start: ${h.access.error}`);
+  if (h.access && h.access.scanners) {
+    if (!h.access.mqtt_connected) p.push("The access MQTT connection is down.");
+    for (const sc of h.access.scanners) if (sc.locked_until) p.push(`Scanner ${sc.name} is locked out after too many bad codes.`);
+  }
+  return p;
+}
+async function healthPage(isRefresh) {
+  let h;
+  try { h = await api("health"); } catch (e) { if (!isRefresh) $main.innerHTML = `<div class="card error">${esc(e.message)}</div>`; return; }
+  const probs = healthProblems(h);
+  const yes = (ok, t = "connected", f = "down") => ok ? `<span class="chip present">${t}</span>` : `<span class="chip unknown">${f}</span>`;
+  const body = `
+    ${probs.length ? `<div class="notice alert"><b>${probs.length} thing${probs.length > 1 ? "s" : ""} to look at</b>
+      <ul style="margin:6px 0 0;padding-left:20px">${probs.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`
+      : `<div class="notice" style="background:var(--chip-present)">Everything looks fine.</div>`}
+    <div class="card"><h3>Connections</h3><table class="kv small">
+      <tr><td>MQTT (Presence)</td><td>${yes(h.mqtt_connected)}</td></tr>
+      ${h.access && h.access.scanners ? `<tr><td>MQTT (Access)</td><td>${yes(h.access.mqtt_connected)}</td></tr>` : ""}
+      <tr><td>go2rtc</td><td>${h.go2rtc_configured ? "URL set" : `<span class="muted">not set</span>`}</td></tr>
+      <tr><td>Home Assistant users</td><td>${h.users_error ? `<span class="error">${esc(h.users_error)}</span>` : "readable"}</td></tr>
+      <tr><td>Home Assistant entity ids</td><td>${h.entities_error ? `<span class="muted">${esc(h.entities_error)} (defaults are shown)</span>` : "readable"}</td></tr>
+    </table></div>
+    <div class="card"><h3>Cameras</h3>${h.cameras.length ? `<table class="small">
+      <tr><th>Camera</th><th>Objects</th><th>Last frame</th><th>Fetch failures</th><th>Last error</th></tr>
+      ${h.cameras.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.objects.join(", "))}</td><td>${secs(c.last_frame_age_s)}</td>
+        <td>${c.fetch_failures_total}</td><td>${esc(c.last_error || "none")}</td></tr>`).join("")}</table>`
+      : `<div class="muted small">No objects yet.</div>`}</div>
+    <div class="card"><h3>Objects, last 24 hours</h3>${h.objects.length ? `<table class="small">
+      <tr><th>Object</th><th>State</th><th>Checks</th><th>Failed</th><th>Frames discarded</th><th>State changes</th><th>Fetch</th></tr>
+      ${h.objects.map(o => `<tr><td><a href="#/obj/${o.id}">${esc(o.name)}</a></td><td>${chip(o.state, "")}</td>
+        <td>${o.day.checks}</td><td>${o.day.failed} (${pct(o.day.failed_pct)})</td><td>${pct(o.day.discard_pct)}</td>
+        <td>${o.day.state_changes}</td><td>${o.fetch_ms ? Math.round(o.fetch_ms) + " ms" : "–"}${o.resolution ? " · " + esc(o.resolution) : ""}</td></tr>`).join("")}</table>`
+      : `<div class="muted small">No objects yet.</div>`}</div>
+    ${h.access && h.access.scanners ? `<div class="card"><h3>Access scanners</h3><table class="small">
+      <tr><th>Scanner</th><th>Last scan</th><th>Last event</th><th>Locked out</th><th>Last error</th></tr>
+      ${h.access.scanners.map(sc => `<tr><td>${esc(sc.name)}</td><td>${sc.last_scan ? ago(sc.last_scan) : "none yet"}</td>
+        <td>${esc(sc.last_event ? (EVENT_TEXT[sc.last_event] || sc.last_event) : "–")}</td><td>${sc.locked_until ? "yes" : "no"}</td>
+        <td>${esc(sc.last_error || "none")}</td></tr>`).join("")}</table></div>` : ""}`;
+  if (isRefresh && document.getElementById("health-dyn")) { document.getElementById("health-dyn").innerHTML = body; return; }
+  $main.innerHTML = `<div class="toolbar"><h2>Health</h2>
+      <a class="btn" href="api/debug-bundle.zip">Download debug bundle</a></div>
+    <div class="stack"><div id="health-dyn" class="stack">${body}</div>
+    <div class="card"><div class="row"><h3 style="flex:1;margin:0">Recent log</h3>
+      <button class="small" onclick="loadLog()">Refresh</button></div>
+      <textarea id="health-log" readonly style="min-height:260px;margin-top:8px"></textarea>
+      <div class="hint">The debug bundle has this log, settings, each object's status and last 24 hours of checks, and the
+        scanners' settings and recent events. It never contains passwords, tokens, keys, passes or codes.</div></div></div>`;
+  loadLog();
+}
+async function loadLog() {
+  const t = document.getElementById("health-log");
+  if (!t) return;
+  try { t.value = (await api("logs")).lines.join("\n"); t.scrollTop = t.scrollHeight; } catch (e) { t.value = e.message; }
 }
 
 // ---------- settings --------------------------------------------------------
@@ -569,6 +648,7 @@ function detail(id, isRefresh) {
     </div>
     <div class="card"><h3>State changes</h3><div id="d-snaps" class="small"><span class="muted">None yet.</span></div>
       <div class="hint">The checked image each time the reported state changed (the last 20 are kept).</div></div>
+    <div class="card" id="auto-card"><h3>Use in automations</h3><div class="loading">Loading…</div></div>
     <div class="card" id="print-card"><h3>Print ${esc(tagLabel(o))}</h3>
       <div class="cols" style="grid-template-columns:minmax(0,1fr) 160px;align-items:start">
         <div>
@@ -598,6 +678,106 @@ function detail(id, isRefresh) {
   initPrint(o);
   updateDetail(o);
   loadFrame(false);
+  loadAutomations(o);
+}
+
+// ---------- "Use in automations" ---------------------------------------------
+// Entity ids come from Home Assistant's entity registry (so renamed ones are
+// right), or are its default ids when that cannot be read. The examples are
+// complete automations to paste into a new automation's YAML editor.
+let autoData = null;
+const AUTO_ROWS = [
+  ["presence", "In place", "on = in its usual place, off = gone (confirmed). Unavailable while unknown."],
+  ["rotation", "Rotation", "Degrees from 0°, in rotation steps, while it is in place."],
+  ["check_now", "Check now", "Press it to check straight away."],
+  ["problem", "Tag rejected", "on when the tag keeps being rejected by the shape gates."],
+  ["enabled", "Enabled", "Turns checking on and off."],
+];
+function autoExamples(o, e) {
+  const n = o.name, q = s => JSON.stringify(s);
+  const notify = msg => `actions:
+  - action: notify.notify          # or your phone's notify action
+    data:
+      message: ${q(msg)}`;
+  const ex = [
+    ["Not in place at a set time", `alias: ${q(n + ": not in place at 21:00")}
+triggers:
+  - trigger: time
+    at: "21:00:00"                 # change the time
+conditions:
+  - condition: state
+    entity_id: ${e.presence}
+    state: "off"
+${notify(n + " is not in its usual place.")}`],
+    ["Gone for a long time", `alias: ${q(n + ": gone for 12 hours")}
+triggers:
+  - trigger: state
+    entity_id: ${e.presence}
+    to: "off"
+    for:
+      hours: 12                    # change the time
+${notify(n + " has been gone for 12 hours.")}`],
+    ["Back in place", `alias: ${q(n + ": back in place")}
+triggers:
+  - trigger: state
+    entity_id: ${e.presence}
+    from: "off"
+    to: "on"
+${notify(n + " is back.")}`],
+  ];
+  if (o.settings.rotation_steps > 1) ex.push(["Back, but turned the wrong way", `alias: ${q(n + ": back but turned")}
+triggers:
+  - trigger: template
+    value_template: >-
+      {{ is_state('${e.presence}', 'on')
+         and states('${e.rotation}') | int(0) != 0 }}
+    for:
+      minutes: 5
+${notify(n + " is back but turned {{ states('" + e.rotation + "') }}°.")}`]);
+  ex.push(["Check straight away when something happens", `alias: ${q(n + ": check when something happens")}
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.REPLACE_ME   # e.g. a gate or garage door sensor
+    to: "off"
+actions:
+  - action: button.press
+    target:
+      entity_id: ${e.check_now}`]);
+  return ex;
+}
+async function loadAutomations(o) {
+  const card = document.getElementById("auto-card");
+  try { autoData = await api(`objects/${o.id}/entities`); }
+  catch (err) { card.innerHTML = `<h3>Use in automations</h3><div class="error">${esc(err.message)}</div>`; return; }
+  const e = autoData.entities, ex = autoExamples(o, e);
+  card.innerHTML = `<h3>Use in automations</h3>
+    <table class="small">${AUTO_ROWS.map(([k, label, hint]) => `<tr><td style="width:24%">${esc(label)}</td>
+      <td><code>${esc(e[k])}</code> <button class="small" onclick="copyText(${esc(JSON.stringify(e[k]))}, this)">Copy</button>
+        <div class="hint">${esc(hint)}</div></td></tr>`).join("")}</table>
+    ${autoData.from_registry ? "" : `<div class="hint">These are Home Assistant's default ids: TagSense could not read
+      its entity registry. If you renamed an entity, use its new id.</div>`}
+    <label for="auto-ex">Example</label>
+    <select id="auto-ex" onchange="showExample()">${ex.map(([t], i) => `<option value="${i}">${esc(t)}</option>`).join("")}</select>
+    <textarea id="auto-yaml" readonly style="margin-top:8px;min-height:270px"></textarea>
+    <div class="row" style="margin-top:8px"><button onclick="copyText(document.getElementById('auto-yaml').value, this)">Copy</button>
+      <span class="hint" style="margin:0">In Home Assistant: Settings → Automations → Create automation → ⋮ → Edit in YAML, then paste.</span></div>`;
+  card._examples = ex;
+  showExample();
+}
+function showExample() {
+  const card = document.getElementById("auto-card"), i = +document.getElementById("auto-ex").value;
+  document.getElementById("auto-yaml").value = card._examples[i][1] + "\nmode: single\n";
+}
+async function copyText(text, btn) {
+  let ok = true;
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) {                     // e.g. not allowed in this frame: the old way
+    const t = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.appendChild(t); t.select();
+    try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+    t.remove();
+  }
+  if (btn) { const t = btn.textContent; btn.textContent = ok ? "Copied" : "Select and copy"; setTimeout(() => btn.textContent = t, 1500); }
 }
 
 let lastHistoryKey = "";
@@ -1159,13 +1339,14 @@ async function accessPage(isRefresh) {
     $main.innerHTML = `<div class="toolbar"><h2>Access</h2></div>
       ${a.error ? `<div class="notice alert">Access is turned on but did not start: ${esc(a.error)}</div>` : ""}
       <div class="card" style="max-width:720px">
-        <h3>Door codes, checked by your doorbell camera</h3>
-        <p>A visitor rings and holds up a QR code on their phone. TagSense checks it and reports a <b>verified</b>
+        <h3>Access codes, checked by a camera</h3>
+        <p>When a scan is started (for example by a doorbell press, a button or a motion sensor), someone holds up
+          a QR code on their phone to a camera. TagSense checks it and reports a <b>verified</b>
           event (or why not) to Home Assistant. There are two kinds of code:</p>
         <ul>
           <li><b>Passes</b> for people who come and go: each belongs to a Home Assistant user, who opens it from this
             sidebar entry. The code changes every 30 s and each one works once.</li>
-          <li><b>Static codes</b> to send to a visitor or tradesperson, with an expiry and/or a number of uses.</li>
+          <li><b>Static codes</b> to send to someone, such as a visitor or tradesperson, with an expiry and/or a number of uses.</li>
         </ul>
         <p>TagSense <b>never unlocks anything</b>. Your automations decide what a verified event does; a ready-made
           blueprint confirms each event with TagSense before unlocking.</p>
@@ -1175,7 +1356,7 @@ async function accessPage(isRefresh) {
             <code>tagsense_access</code> with a long random password. Never reuse it anywhere else.</li>
           <li>On TagSense's <b>Configuration</b> tab, turn on <code>access_enabled</code> and set
             <code>access_mqtt_username</code> / <code>access_mqtt_password</code> to that login.</li>
-          <li>Restart TagSense, then come back here to add the doorbell camera as a scanner.</li>
+          <li>Restart TagSense, then come back here to add the camera as a scanner.</li>
         </ol>
         <p class="muted small">Presence is not affected either way. The app's <b>Documentation</b> tab has the full details,
           including what this does and does not protect against.</p></div>`;
@@ -1202,7 +1383,7 @@ async function accessPage(isRefresh) {
     <div id="acc-codes"><div class="card"><div class="loading">Loading codes…</div></div></div>
     <h2 style="margin:20px 0 12px">Scanners</h2>
     ${access.scanners.length ? access.scanners.map(scannerCard).join("") :
-      `<div class="card"><p class="muted">No scanners yet. Add the doorbell camera as a scanner, then trigger <b>Scan</b> from a doorbell-press automation.</p></div>`}
+      `<div class="card"><p class="muted">No scanners yet. Add the camera that will read the codes as a scanner, then start its <b>Scan</b> from an automation (for example on a doorbell press).</p></div>`}
   </div>`;
   loadCodes();
 }
@@ -1285,15 +1466,15 @@ function setupSteps() {
   return [
     [a.mqtt_connected, "Access has its own MQTT login, connected",
       "Check access_mqtt_username / access_mqtt_password on the Configuration tab and the broker log."],
-    [a.scanners.length > 0, "The doorbell camera is added as a scanner",
+    [a.scanners.length > 0, "A camera is added as a scanner",
       `<a href="#/access/new">Add scanner</a>, then draw its scan area.`],
     [!!(d && (d.people.some(p => p.enabled) || d.static.some(r => r.status === "active"))), "There is a pass or a static code",
       "Add a pass for yourself (below), so you can test with your phone."],
     [!!act.test_ok, "<b>Test my setup</b> has read a code",
       "Press <b>Test my setup</b> on the scanner and hold a code up to the camera. Test events never unlock anything."
       + (act.test_ok ? "" : "")],
-    [!!act.ha_scan, "A doorbell automation starts a scan",
-      `In Home Assistant, add an automation: when the doorbell is pressed, press <code>${esc(button)}</code>.`],
+    [!!act.ha_scan, "An automation starts a scan",
+      `In Home Assistant, add an automation that presses <code>${esc(button)}</code> when someone should show a code (for example on a doorbell press).`],
     [!!act.confirm, "Home Assistant confirms events before unlocking",
       `Add the <code>rest_command</code> from <i>Confirm events</i> below, then
       <a href="${BLUEPRINT_IMPORT}" target="_blank" rel="noopener">import the unlock blueprint</a> and pick <code>${esc(event)}</code>.
@@ -1380,7 +1561,7 @@ function drawTest(sc) {
           <img alt="Test code" src="api/access/static/${t.code_id}.png" style="width:200px;max-width:100%;background:#fff;margin:8px 0;border-radius:6px">`
         : `<button class="small" onclick="testCode('${sc.id}')">Issue a 1-use test code</button> (open this page on the phone to show it).`}</li>
       <li>Press <button class="small primary" onclick="testScan('${sc.id}')" ${sc.scanning ? "disabled" : ""}>Start test scan</button>
-        and hold the code up to the camera within ${sc.window_s} s, as a visitor would.</li>
+        and hold the code up to the camera within ${sc.window_s} s.</li>
     </ol>
     ${t.started && !t.done ? `<div class="notice small">Scanning… ${sc.scanning ? "hold the code up to the camera now." : "waiting for the result."}</div>` : ""}
     ${t.done ? `<div class="notice ${ok ? "" : "alert"}" style="${ok ? "background:var(--chip-present)" : ""}">
@@ -1418,7 +1599,7 @@ function staticCard() {
     <td style="text-align:right">${["active", "not yet valid"].includes(r.status) && r.current_key ? `
       <button class="small" onclick="showCode('${r.code_id}')">Show</button>
       <button class="small danger" onclick="revokeCode('${r.code_id}')">Revoke</button>` : ""}</td></tr>`).join("");
-  return `<div class="card" style="margin-bottom:16px"><h3>Static codes (for visitors)</h3>
+  return `<div class="card" style="margin-bottom:16px"><h3>Static codes (to send to someone)</h3>
     <p class="muted small">For sending by text, e.g. to a tradesperson. Assume it can be forwarded: give it a start, an expiry and/or a number of uses.
       With no expiry it still expires after the backstop.</p>
     <div class="row" style="align-items:flex-end;flex-wrap:wrap">
@@ -1482,7 +1663,7 @@ function codeMessage(r) {
   if (r.valid_from) parts.push(`from ${fmtWhen(r.valid_from)}`);
   parts.push(`until ${fmtWhen(r.expires)}`);
   const uses = r.uses_total ? (r.uses_total === 1 ? "one use" : `${r.uses_total} uses`) : "any number of uses";
-  return `Here is your access code. Ring the doorbell, then hold this code up to the camera. Valid ${parts.join(" ")}, ${uses}.`;
+  return `Here is your access code. When you arrive, hold this code up to the camera. Valid ${parts.join(" ")}, ${uses}.`;
 }
 function showCode(id) {
   const r = codesData.static.find(x => x.code_id === id), box = document.getElementById("sc-show");
@@ -1598,7 +1779,7 @@ async function scannerForm(id) {
       <label for="sf-stream">go2rtc stream</label>
       <input id="sf-stream" list="sf-streams" value="${esc(v.go2rtc_stream)}"><datalist id="sf-streams"></datalist>
       <label for="sf-entity">Home Assistant camera</label>
-      <input id="sf-entity" list="sf-entities" value="${esc(v.camera_entity)}" placeholder="camera.doorbell"><datalist id="sf-entities"></datalist>
+      <input id="sf-entity" list="sf-entities" value="${esc(v.camera_entity)}" placeholder="camera.front_door"><datalist id="sf-entities"></datalist>
       <label class="inline"><input type="checkbox" id="sf-fallback" ${v.fallback ? "checked" : ""}> If this camera fails, try the other source</label>
       ${o ? "" : `<div class="hint" style="margin-top:10px">After adding the scanner you can draw its scan area on a live frame.</div>`}
       <label for="sf-capture">Frame capture</label>
@@ -1618,7 +1799,7 @@ async function scannerForm(id) {
         ${o ? `<span class="spacer"></span><button type="button" class="danger" onclick="deleteScanner('${o.id}')">Delete</button>` : ""}</div>
     </form></div>
     ${o ? `<div class="card" style="order:-1">${editorHtml("Scan area",
-      "Cover where a visitor holds up a phone. A tighter area is faster; a code must be about 100 px across in the full frame to read. Any readable code in the frame is blacked out here.")}</div>` : ""}
+      "Cover where someone holds up a phone. A tighter area is faster; a code must be about 100 px across in the full frame to read. Any readable code in the frame is blacked out here.")}</div>` : ""}
     </div>`;
   if (o) {
     editorCtx = scannerEditor(o.id);

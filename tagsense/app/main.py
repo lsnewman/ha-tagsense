@@ -17,6 +17,8 @@ from .objects import (ConfigError, ObjectConfig, ObjectStore, remove_object_dir,
 from .scheduler import STARTUP
 from .sources import build_source
 from .tracker import TrackedObject, Tuning
+from .ha_entities import EntityDirectory
+from .health import log_ring
 from .users import UserDirectory
 
 log = logging.getLogger("tagsense")
@@ -62,6 +64,7 @@ class App:
     def __init__(self, opts: dict, mqtt=None, source_factory=make_source, data_dir: str = DATA_DIR,
                  notifier: Notifier | None = None, access_mqtt=None, access_source_factory=None):
         self.opts = opts
+        log_ring()                      # recent log lines for the Health page
         self.notifier = notifier or Notifier()
         self.data_dir = data_dir
         self.source_factory = source_factory
@@ -86,6 +89,7 @@ class App:
         self.gen_stop = threading.Event()
         self._build(self.configs)
         self.users = UserDirectory()     # who is using the panel (ingress header + HA user list)
+        self.entities = EntityDirectory()  # entity ids for the panel's automation examples
         self.access = None              # app.access.manager.AccessManager, when enabled
         self.access_error: str | None = None
         if opts.get("access_enabled"):

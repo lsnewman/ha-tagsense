@@ -2,7 +2,7 @@
 
 Both formats use only Base32 characters (RFC 4648: A-Z, 2-7), which are in the
 QR alphanumeric set, so they fit QR version 2 at error correction M (25
-modules, up to 38 characters) and read at doorbell resolution.
+modules, up to 38 characters) and read at a typical doorbell camera's resolution.
 
   rotating (23):  "TR" + v + handle(4) + mac(16)
                   mac = HMAC-SHA256(person secret, "TR|v|handle|step")[:10]

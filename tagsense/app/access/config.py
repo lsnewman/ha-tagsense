@@ -1,6 +1,6 @@
 """Scanner configuration: /data/access/scanners.json, edited from the panel.
 
-A scanner is a camera (usually a doorbell) that looks for a QR code for a
+A scanner is a camera (often a doorbell) that looks for a QR code for a
 short window after it is triggered. It has its own source and crop, and does
 not share anything with the bin objects, even when the camera is the same.
 """

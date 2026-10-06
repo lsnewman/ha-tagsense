@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import globals as gl
+from . import health as hl
 from .mqtt_ha import SETTING_KEYS
 from .objects import ConfigError, ObjectConfig, parse_one, slugify, unique_id
 from .detector import DEFAULT_FAMILY, FAMILIES, family_info
@@ -142,6 +143,10 @@ class Api:
     def chart(self, oid: str) -> list:
         return self._obj(oid).chart_points()
 
+    def entities(self, oid: str) -> dict:
+        o = self._obj(oid)
+        return self.app.entities.for_object(oid, o.oc.name)
+
     def snapshots(self, oid: str) -> list:
         return self._obj(oid).snapshots.list()
 
@@ -162,7 +167,7 @@ class Api:
                 "app_options": {"go2rtc_url": o.get("go2rtc_url") or "",
                                 "mqtt": f"override: {o['mqtt_host']}:{o.get('mqtt_port') or 1883}"
                                 if o.get("mqtt_host") else "the Mosquitto broker app (automatic)",
-                                "mqtt_connected": bool(self.app.connected),
+                                "mqtt_connected": hl.mqtt_connected(self.app.mqtt, self.app.connected),
                                 "access_enabled": bool(o.get("access_enabled")),
                                 "access_mqtt_username": o.get("access_mqtt_username") or ""}}
 
@@ -172,6 +177,14 @@ class Api:
         except ConfigError as e:
             raise ApiError(400, str(e)) from None
         return self.globals_get()
+
+    # --- health -------------------------------------------------------------
+
+    def health(self) -> dict:
+        return hl.health(self.app)
+
+    def logs(self) -> dict:
+        return {"lines": hl.log_ring().tail(300)}
 
     # --- export / import --------------------------------------------------
 
@@ -541,10 +554,14 @@ ROUTES = [
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/set_orientation", "set_orientation"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/history", "history"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/chart", "chart"),
+    ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/entities", "entities"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots", "snapshots"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/snapshots/(?P<name>\d+)\.jpg", "snapshot"),
     ("GET", r"/api/globals", "globals_get"),
     ("PATCH", r"/api/globals", "globals_set"),
+    ("GET", r"/api/health", "health"),
+    ("GET", r"/api/logs", "logs"),
+    ("GET", r"/api/debug-bundle\.zip", "debug_bundle"),
     ("GET", r"/api/export", "export"),
     ("POST", r"/api/import", "import_"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/frame\.jpg", "frame"),
@@ -699,6 +716,10 @@ def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
                     return self._send(200, api.access_static_png(kw["code_id"]), "image/png")
                 if name in ("access_image", "access_frame"):
                     return self._send(200, getattr(api, name)(kw["sid"]), "image/jpeg")
+                if name == "debug_bundle":
+                    body = hl.debug_bundle(api.app)
+                    self._attachment(f"tagsense-debug-{time.strftime('%Y%m%d-%H%M%S')}.zip")
+                    return self._send(200, body, "application/zip")
                 if name == "access_debug":
                     body = api.access_debug(kw["sid"])
                     self._attachment(f"tagsense-scan-frames-{kw['sid']}.zip")

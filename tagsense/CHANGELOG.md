@@ -4,6 +4,26 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
 
 ## 0.5.1 (in development)
 
+- **Blueprint: several locks.** The unlock blueprint's *Locks* field now
+  takes one lock or more (for example a deadbolt and a handle lock on one
+  door). They are unlocked together and, after the auto-lock time, every one
+  still unlocked is locked again. The wait for "unlocked" now carries on
+  after a minute, so one slow or offline lock cannot stop the others being
+  locked again. Automations already made from it keep working. Import the
+  blueprint again to get this.
+- **Health page.** One place to see whether everything is working: a short
+  list of anything to look at, the MQTT and Home Assistant connections, each
+  camera's last frame and errors, each object's last 24 hours (checks,
+  failures, discarded frames, state changes), the access scanners and the
+  recent log. **Download debug bundle** gives a zip to attach to a bug
+  report; it never contains passwords, tokens, keys, passes or codes.
+- **Use in automations.** Each object's page lists its entity ids, read
+  from Home Assistant so renamed entities are right, with copy buttons. It
+  also has ready-made automations to paste into Home Assistant's YAML editor:
+  not in place at a set time, gone for a long time, back in place, back but
+  turned the wrong way, and check straight away when something else happens.
+- Access wording no longer assumes a doorbell. It talks about a camera and
+  starting a scan; a doorbell is one example.
 - **Access: setup checklist and *Test my setup*.** The Access page shows a
   checklist ticked from what TagSense has seen: login connected, scanner
   added, a pass or code exists, a test passed, a doorbell automation started
