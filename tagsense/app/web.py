@@ -379,6 +379,12 @@ class Api:
         self._access().scan(sid, "panel")
         return {"scanning": sid}
 
+    def access_test(self, sid: str) -> dict:
+        """A scan whose events are marked test and can never be confirmed."""
+        self._scanner(sid)
+        self._access().scan(sid, "test", test=True)
+        return {"scanning": sid, "test": True}
+
     def access_image(self, sid: str) -> bytes:
         data = self._scanner(sid).last_jpeg
         if not data:
@@ -552,6 +558,7 @@ ROUTES = [
     ("PUT", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)", "access_update"),
     ("DELETE", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)", "access_delete"),
     ("POST", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/scan", "access_scan"),
+    ("POST", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/test", "access_test"),
     ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/last\.jpg", "access_image"),
     ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/frame\.jpg", "access_frame"),
     ("GET", r"/api/access/scanners/(?P<sid>[a-z0-9_]+)/debug\.zip", "access_debug"),
@@ -572,7 +579,7 @@ ROUTES = [
 # The only routes a signed-in non-admin may use (the page itself, "/", has no data).
 # Every other route is admin-only: a new route is admin-only unless added here.
 NON_ADMIN_ROUTES = ("whoami", "pass_info", "pass_png")
-NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_clear_lockout",
+NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_test", "access_clear_lockout",
            "access_person_reenrol", "access_static_revoke", "access_static_revoke_all",
            "access_rotate_key", "access_confirm_rotate")
 
@@ -627,6 +634,7 @@ def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
                 log.warning("access: confirm request with a wrong or missing token from %s",
                             self.client_address[0])
                 return self._json(401, {"confirmed": False, "error": "wrong token"})
+            acc.note("confirm")             # Home Assistant's confirm step is set up
             info = acc.confirm.confirm(event_id)
             if info is None:
                 log.warning("access: confirm refused: unknown, used or expired event id")

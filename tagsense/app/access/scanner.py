@@ -53,13 +53,16 @@ def now_iso() -> str:
 class Scanner:
     def __init__(self, cfg: ScannerConfig, source: Source, mqtt, access_dir: str,
                  stop_event: threading.Event, capture_factory=open_capture,
-                 verifier=None, snapshot_source: Source | None = None, confirm=None):
+                 verifier=None, snapshot_source: Source | None = None, confirm=None,
+                 on_test_ok=None):
         self.cfg = cfg
         self.source = source                    # snapshots (and the stream URL for go2rtc)
         self.snapshot_source = snapshot_source  # auto mode: the HA camera
         self.mqtt = mqtt
         self.verifier = verifier                # None: every TagSense code is "unavailable"
         self.confirm = confirm                  # ConfirmBook: one-time IDs for verified events
+        self.on_test_ok = on_test_ok            # called when a test scan verifies a code
+        self.window_test = False                # this window is a panel test: events say so, never confirmable
         self.stop_event = stop_event
         self.debug_dir = os.path.join(access_dir, "debug", cfg.id)
         self.cond = threading.Condition()
@@ -87,9 +90,11 @@ class Scanner:
 
     # --- triggers ---------------------------------------------------------------
 
-    def scan(self, trigger: str = "button") -> None:
+    def scan(self, trigger: str = "button", test: bool = False) -> None:
+        """Open a scan window. A real scan during a test window turns it into a real one."""
         with self.cond:
             self.deadline = time.monotonic() + self.cfg.window_s
+            self.window_test = test
             self.cond.notify_all()
         log.info("access [%s]: scan requested (%s), window %gs", self.id, trigger, self.cfg.window_s)
 
@@ -259,10 +264,14 @@ class Scanner:
         if res_status == "verified":
             attrs.update(capture=st["capture"], first_frame_s=st.get("first_frame_s"),
                          frames=st["frames"])
-            if self.confirm is not None:        # for automations that confirm it first
+            if self.window_test:                # a test: nothing may act on it
+                if self.on_test_ok:
+                    self.on_test_ok()
+            elif self.confirm is not None:      # for automations that confirm it first
                 attrs["event_id"] = self.confirm.issue(
                     {k: attrs.get(k) for k in ("label", "code_type", "code_id")} | {"scanner": self.id})
-        log.info("access [%s]: %s %s code%s", self.id, res_status, attrs.get("code_type", "TagSense"),
+        log.info("access [%s]: %s%s %s code%s", self.id, "test: " if self.window_test else "", res_status,
+                 attrs.get("code_type", "TagSense"),
                  f" '{attrs['label']}' ({attrs.get('code_id')})" if attrs.get("label")
                  else f", fingerprint {r.fingerprint}")
         self._publish_image(img, quads)                  # before the event, so it is current
@@ -287,6 +296,8 @@ class Scanner:
 
     def _emit(self, event_type: str, attrs: dict):
         attrs = {"scanned_at": now_iso(), "scanner": self.id, **attrs}
+        if self.window_test:
+            attrs["test"] = True
         self.events.appendleft({"event_type": event_type, **attrs})
         self.mqtt.publish_event(self.id, event_type, attrs)
 

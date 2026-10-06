@@ -4,6 +4,20 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
 
 ## 0.5.1 (in development)
 
+- **Access: setup checklist and *Test my setup*.** The Access page shows a
+  checklist ticked from what TagSense has seen: login connected, scanner
+  added, a pass or code exists, a test passed, a doorbell automation started
+  a scan, Home Assistant confirmed an event. *Test my setup* on a scanner runs
+  a test scan with your pass or a 1-use test code, and explains the result.
+  Test events carry `test: true` and are never confirmable, so they cannot
+  unlock anything. The blueprint now skips them before the confirm step
+  (re-import it to get this; the old one already refused them at the
+  confirm step).
+- **Links to a page.** Each panel page now has its own address in Home
+  Assistant, for example `/<panel>/pass` for My pass or `/<panel>/obj/bin`
+  for an object, so a dashboard button can open it directly. The browser's
+  Back button and bookmarks follow the panel's pages. The My pass page shows
+  its shortcut.
 - **Detection settings moved into the panel (Settings).** The options that
   apply to every object (shape gates, frames per check, hits and misses
   needed, confirmation delay, frame sanity thresholds, log level) are now

@@ -268,6 +268,18 @@ own pass, if an admin has given them one. TagSense asks Home Assistant who is
 an admin. If it cannot tell, for example because Home Assistant is
 restarting, nobody counts as an admin until it can.
 
+**Links to a page.** The panel's pages have their own addresses under the
+sidebar entry's path (shown in the browser's address bar), so a dashboard
+button with the tap action *Navigate* can open one directly:
+
+- `/<panel>/pass`: My pass (for anyone). The My pass page shows the exact path.
+- `/<panel>/obj/<object id>`, `/<panel>/access`, `/<panel>/settings`: admins.
+
+`<panel>` is the part of the address after your Home Assistant host when you
+open TagSense from the sidebar (for example `/744e9206_tagsense`). This needs
+TagSense opened as a panel in Home Assistant: it does not work when the
+panel is embedded in a dashboard card.
+
 ### Scanners
 
 Open **Access** in the panel and add a **scanner**: the doorbell camera (a
@@ -345,6 +357,8 @@ automation:
       - condition: template
         value_template: >-
           {{ (now() - as_datetime(trigger.to_state.state)).total_seconds() < 30 }}
+      - condition: template      # skip the panel's "Test my setup" scans
+        value_template: "{{ not (trigger.to_state.attributes.test | default(false)) }}"
     actions:
       - action: notify.notify
         data:
@@ -358,6 +372,36 @@ decide to, unlocking) is up to you. **Before unlocking, confirm the event**
 (see *Confirming events* below): anything on your MQTT broker could publish a
 fake one. Notify on `invalid` and `locked_out` too,
 so you hear about attempts.
+
+**Test scans.** Events from the panel's **Test my setup** carry
+`test: true`. A verified test event has no `event_id`, so it can never be
+confirmed: an automation that confirms before unlocking (like the blueprint)
+cannot unlock on a test. The blueprint skips test events before it does
+anything else.
+
+### Setup checklist and Test my setup (panel)
+
+The Access page starts with a **Setup** checklist, ticked from what TagSense
+has actually seen rather than from a form:
+
+1. the access MQTT login is connected;
+2. a scanner exists;
+3. there is a pass or a static code;
+4. **Test my setup** has read a code;
+5. Home Assistant has started a scan with the scanner's *Scan* button (your
+   doorbell automation);
+6. Home Assistant has asked TagSense to confirm an event (the
+   `rest_command` and the unlock blueprint are set up).
+
+The times of the last three are kept across restarts. The checklist folds
+away once everything is ticked.
+
+**Test my setup** (on each scanner) runs a scan whose events are marked as
+tests. Show your pass, or press *Issue a 1-use test code* (it is valid for 15
+minutes, and revoked when you close the test if it was not used), then
+*Start test scan* and hold the code up to the camera. The result says in
+plain words what happened and what to try if it failed. A real doorbell scan
+during a test is a real scan.
 
 ### Passes and static codes (panel, admins)
 

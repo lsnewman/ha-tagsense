@@ -23,3 +23,5 @@ def test_blueprint_parses_and_confirms_before_unlocking():
     relock = [a.get("action") for a in branches[0]["sequence"]]
     assert "lock.lock" in relock and branches[1]["sequence"] == ("input", "on_confirmed")
     assert bp["actions"][1]["condition"] == "template" and "confirmed" in bp["actions"][1]["value_template"]
+    # Panel test scans are skipped before anything else.
+    assert "test" in bp["conditions"][0]["value_template"]

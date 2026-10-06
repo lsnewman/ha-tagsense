@@ -82,6 +82,12 @@ triggers:
       event_type:
         - verified
 
+conditions:
+  # "Test my setup" in the TagSense panel marks its events as tests. They can
+  # never be confirmed anyway; skipping them here keeps the trace clean.
+  - condition: template
+    value_template: "{{ not (trigger.to_state.attributes.test | default(false)) }}"
+
 variables:
   lock_entity: !input lock_entity
   auto_lock_number: !input auto_lock_number
