@@ -128,8 +128,15 @@ on a bin lid, about 50 px across in 1080p):
   - Smeared (vertical-streak) frames scored ≤ 0.01.
   - Good frames and darkened copies scored ≥ 0.93.
   - Real IR night frames scored 0.75-0.86.
-- Thresholds: `sanity_min_ratio` 0.5, and `sanity_min_h` 0.02 for a uniform
-  (dead) feed.
+- Thresholds: `sanity_min_ratio` **0.2** (it was 0.5 until 0.5.0), and
+  `sanity_min_h` 0.02 for a uniform (dead) feed.
+- Why 0.2 (2026-10-06, new 5 MP camera, tight crop around the bin):
+  - With the bin present the score was 0.83-1.07.
+  - With the bin out overnight it was about 0.59.
+  - At sunrise, with long shadows over the empty crop, it fell to 0.39-0.47.
+    Every frame was discarded and the bin read *unknown* for 2.5 hours (from
+    06:53 to 09:23) instead of *absent*.
+  - Real smear scores ≤ 0.01, so 0.2 still rejects it with a wide margin.
 
 ### Night/IR (development camera)
 

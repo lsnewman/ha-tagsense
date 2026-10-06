@@ -2,8 +2,8 @@ blueprint:
   name: TagSense - unlock on a confirmed access code
   description: >-
     When a TagSense scanner reports a **verified** code, ask TagSense to confirm
-    it (one-time, within 30 s), then unlock. Once the lock reports unlocked,
-    wait the auto-lock time and lock again if it is still unlocked.
+    it (one-time, within 30 s), then unlock one or more locks. After the
+    auto-lock time, lock again every one that is still unlocked.
 
 
     **Needs the `rest_command.tagsense_confirm` set up first**: copy it, and the
@@ -30,10 +30,14 @@ blueprint:
             - domain: event
               integration: mqtt
     lock_entity:
-      name: Lock
-      description: The lock to open for a confirmed code.
+      name: Locks
+      description: >-
+        The lock or locks to open for a confirmed code, for example a deadbolt
+        and a handle lock on the same door. They are all unlocked together and
+        locked again together.
       selector:
         entity:
+          multiple: true
           filter:
             - domain: lock
     auto_lock_number:
@@ -64,7 +68,7 @@ blueprint:
       description: >-
         Extra actions run after the code is confirmed and the unlock is sent,
         for example a phone notification. They run alongside the relock, so if
-        one fails the door is still locked again. Empty by default. Templates can use
+        one fails the locks still lock again. Empty by default. Templates can use
         `confirm.content.label` (who) and `confirm.content.code_type`
         (rotating or static).
       default: []
@@ -82,8 +86,16 @@ triggers:
       event_type:
         - verified
 
+conditions:
+  # "Test my setup" in the TagSense panel marks its events as tests. They can
+  # never be confirmed anyway; skipping them here keeps the trace clean.
+  - condition: template
+    value_template: "{{ not (trigger.to_state.attributes.test | default(false)) }}"
+
 variables:
   lock_entity: !input lock_entity
+  # One lock (automations made before 0.5.1) or several.
+  locks: "{{ [lock_entity] if lock_entity is string else lock_entity | list }}"
   auto_lock_number: !input auto_lock_number
   auto_lock_seconds: !input auto_lock_seconds
   relock_after: >-
@@ -100,24 +112,29 @@ actions:
     value_template: "{{ confirm.status == 200 and confirm.content.confirmed }}"
   # 2. Unlock. Then two independent branches: the relock, and any extra actions.
   #    Running them in parallel means a failing extra action (say, a notify
-  #    service that no longer exists) cannot stop the door being locked again.
+  #    service that no longer exists) cannot stop the lock locking again.
   - action: lock.unlock
     target:
-      entity_id: "{{ lock_entity }}"
+      entity_id: "{{ locks }}"
   - parallel:
       - sequence:
-          # Wait until the lock actually reports unlocked (it can be slow to connect).
-          - wait_template: "{{ is_state(lock_entity, 'unlocked') }}"
+          # Wait until a lock reports unlocked (locks can be slow to connect).
+          # After a minute carry on anyway, so one slow or offline lock cannot
+          # stop the others being locked again.
+          - wait_template: >-
+              {{ locks | select('is_state', ['unlocked', 'open']) | list | count > 0 }}
             timeout: "00:01:00"
-            continue_on_timeout: false
-          # 3. Lock again after the auto-lock time, if it is still unlocked.
+            continue_on_timeout: true
+          # 3. After the auto-lock time, lock every one that is still unlocked.
           - condition: template
             value_template: "{{ relock_after | int(0) > 0 }}"
           - delay:
               seconds: "{{ relock_after | int(0) }}"
+          - variables:
+              still_unlocked: "{{ locks | select('is_state', ['unlocked', 'open']) | list }}"
           - condition: template
-            value_template: "{{ is_state(lock_entity, 'unlocked') }}"
+            value_template: "{{ still_unlocked | count > 0 }}"
           - action: lock.lock
             target:
-              entity_id: "{{ lock_entity }}"
+              entity_id: "{{ still_unlocked }}"
       - sequence: !input on_confirmed

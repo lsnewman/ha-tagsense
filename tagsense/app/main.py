@@ -8,6 +8,7 @@ import signal
 import threading
 
 from . import decision as dec
+from . import globals as gl
 from .cameras import CameraWorker
 from .ha_notify import Notifier
 from .mqtt_ha import MqttClient, ObjectPublisher, supervisor_mqtt_config
@@ -16,6 +17,8 @@ from .objects import (ConfigError, ObjectConfig, ObjectStore, remove_object_dir,
 from .scheduler import STARTUP
 from .sources import build_source
 from .tracker import TrackedObject, Tuning
+from .ha_entities import EntityDirectory
+from .health import log_ring
 from .users import UserDirectory
 
 log = logging.getLogger("tagsense")
@@ -34,7 +37,7 @@ DEFAULT_OPTIONS = {
     "absent_checks": 3,
     "confirm_delay_s": 45,
     "unknown_after_failures": 2,
-    "sanity_min_ratio": 0.5,
+    "sanity_min_ratio": 0.2,
     "sanity_min_h": 0.02,
     "log_level": "info",
     "access_enabled": False,
@@ -61,6 +64,7 @@ class App:
     def __init__(self, opts: dict, mqtt=None, source_factory=make_source, data_dir: str = DATA_DIR,
                  notifier: Notifier | None = None, access_mqtt=None, access_source_factory=None):
         self.opts = opts
+        log_ring()                      # recent log lines for the Health page
         self.notifier = notifier or Notifier()
         self.data_dir = data_dir
         self.source_factory = source_factory
@@ -68,15 +72,12 @@ class App:
         self.reload_lock = threading.RLock()
         self.store = ObjectStore(data_dir)
         self.configs = self.store.load_or_empty()
-        self.tuning = Tuning(
-            cfg=dec.Config(present_min_hits=int(opts["present_min_hits"]),
-                           absent_checks=int(opts["absent_checks"]),
-                           unknown_after_failures=int(opts["unknown_after_failures"])),
-            max_aspect=float(opts["max_aspect"]),
-            confirm_delay_s=float(opts["confirm_delay_s"]),
-            sanity_min_ratio=float(opts["sanity_min_ratio"]),
-            sanity_min_h=float(opts["sanity_min_h"]),
-            min_size_ratio=float(opts["min_size_ratio"]))
+        # Detection globals live in the panel (globals.json); the app options only seed them.
+        self.globals, seeded = gl.load(data_dir, opts)
+        if seeded:
+            log.info("detection settings copied from the app options; change them in the panel (Settings)")
+        self.opts.update(self.globals)
+        self.tuning = self._make_tuning()
         self.mqtt = mqtt or MqttClient(supervisor_mqtt_config(opts), VERSION,
                                        on_connected=self._on_connected,
                                        on_setting=self._on_setting,
@@ -88,10 +89,39 @@ class App:
         self.gen_stop = threading.Event()
         self._build(self.configs)
         self.users = UserDirectory()     # who is using the panel (ingress header + HA user list)
+        self.entities = EntityDirectory()  # entity ids for the panel's automation examples
         self.access = None              # app.access.manager.AccessManager, when enabled
         self.access_error: str | None = None
         if opts.get("access_enabled"):
             self._init_access(access_mqtt, access_source_factory)
+
+    def _make_tuning(self) -> Tuning:
+        g = self.globals
+        return Tuning(
+            cfg=dec.Config(present_min_hits=g["present_min_hits"], absent_checks=g["absent_checks"],
+                           unknown_after_failures=g["unknown_after_failures"]),
+            max_aspect=float(g["max_aspect"]), confirm_delay_s=float(g["confirm_delay_s"]),
+            sanity_min_ratio=float(g["sanity_min_ratio"]), sanity_min_h=float(g["sanity_min_h"]),
+            min_size_ratio=float(g["min_size_ratio"]))
+
+    def set_globals(self, values: dict) -> dict:
+        """Validate, save and apply new detection globals without a restart.
+        Raises ConfigError (nothing changes) if any value is bad."""
+        new = gl.validate({**self.globals, **values})
+        if new == self.globals:
+            return new
+        changed = sorted(k for k in new if new[k] != self.globals[k])
+        with self.reload_lock:
+            gl.save(self.data_dir, new)
+            self.globals = new
+            self.opts.update(new)
+            apply_log_level(new["log_level"])
+            if changed != ["log_level"]:
+                # Rebuild cameras and objects with the new values, as an object edit does.
+                self.tuning = self._make_tuning()
+                self.apply_configs(self.configs)
+        log.info("settings changed: %s", ", ".join(f"{k}={new[k]}" for k in changed))
+        return new
 
     def _init_access(self, mqtt, source_factory):
         """Only here is the access module imported. If it cannot start, it stays
@@ -233,20 +263,20 @@ class App:
         self.stop_event.set()
 
 
+def apply_log_level(level: str):
+    logging.getLogger().setLevel(str(level).upper())
+
+
 def main():
     opts = load_options()
-    logging.basicConfig(level=str(opts.get("log_level", "info")).upper(),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     log.info("TagSense %s starting", VERSION)
-    if int(opts["present_min_hits"]) > int(opts["burst_size"]):
-        log.warning("present_min_hits %s > burst_size %s: clamping",
-                    opts["present_min_hits"], opts["burst_size"])
-        opts["present_min_hits"] = opts["burst_size"]
     try:
         app = App(opts)
     except (ConfigError, ValueError, RuntimeError) as e:
         log.error("configuration error: %s", e)
         raise SystemExit(1)
+    apply_log_level(app.globals["log_level"])
     signal.signal(signal.SIGTERM, app.shutdown)
     signal.signal(signal.SIGINT, app.shutdown)
     app.run()

@@ -1,0 +1,71 @@
+site_name: TagSense
+site_description: >-
+  A Home Assistant app that uses your cameras for Presence (is a tagged object
+  in its place?) and Access (is this QR code valid?).
+site_url: https://lsnewman.github.io/ha-tagsense/
+repo_url: https://github.com/lsnewman/ha-tagsense
+repo_name: lsnewman/ha-tagsense
+edit_uri: edit/main/docs/
+copyright: MIT licence · built with substantial help from AI (see "About")
+
+theme:
+  name: material
+  icon:
+    logo: material/tag-search
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: light blue
+      toggle: {icon: material/weather-sunny, name: Light mode}
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc: {permalink: true}
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - The panel: panel.md
+  - Presence:
+      - presence/index.md
+      - Tags and printing: presence/tags.md
+      - Objects and settings: presence/objects-settings.md
+      - Entities and automations: presence/entities-automations.md
+      - Rotation: presence/rotation.md
+  - Access:
+      - access/index.md
+      - Setting up: access/setup.md
+      - Codes: access/codes.md
+      - Scanners: access/scanners.md
+      - Events and confirming: access/events.md
+      - The unlock blueprint: access/blueprint.md
+      - Security: access/security.md
+  - Health and troubleshooting: health.md
+  - Upgrading: upgrading.md
+  - Limitations: limitations.md
+  - About:
+      - Development: development.md
+      - AI usage: ai-usage.md

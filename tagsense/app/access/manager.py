@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import threading
 import zipfile
+from datetime import datetime, timezone
 
 from ..mqtt_ha import MqttConfig, supervisor_mqtt_config
 from ..objects import ConfigError, slugify, unique_id
@@ -24,6 +26,7 @@ class AccessError(Exception):
     """The access module cannot start; the bin sensor is unaffected."""
 
 
+ACTIVITY = ("ha_scan", "confirm", "test_ok")
 SNAPSHOT_TIMEOUT_S = 30     # some cameras take 20 s to produce a single JPEG
 
 
@@ -85,6 +88,15 @@ class AccessManager:
                                        on_scan=self.scan, on_connected=self._on_connected)
         self.stop_event = threading.Event()
         self.scanners: dict[str, Scanner] = {}
+        # When Home Assistant last started a scan, confirmed an event, and a panel test
+        # last verified a code: the panel's setup checklist.
+        self.activity_path = os.path.join(self.dir, "activity.json")
+        self.activity: dict[str, str] = {}
+        try:
+            with open(self.activity_path) as f:
+                self.activity = {k: v for k, v in json.load(f).items() if k in ACTIVITY}
+        except (OSError, ValueError, AttributeError):
+            pass
         self._build()
 
     def _build(self):
@@ -93,7 +105,8 @@ class AccessManager:
         self.scanners = {c.id: Scanner(c, self.source_factory(c, self.opts), self.mqtt, self.dir,
                                        self.stop_event, verifier=self.verifier,
                                        snapshot_source=self.snapshot_factory(c, self.opts),
-                                       confirm=self.confirm, **extra)
+                                       confirm=self.confirm, on_test_ok=lambda: self.note("test_ok"),
+                                       **extra)
                          for c in self.configs}
 
     def start(self):
@@ -123,13 +136,26 @@ class AccessManager:
 
     # --- commands ---------------------------------------------------------------
 
-    def scan(self, sid: str, trigger: str = "button"):
+    def scan(self, sid: str, trigger: str = "button", test: bool = False):
         s = self.scanners.get(sid)
         if not s:
             log.warning("access: scan requested for unknown scanner %r", sid)
             return False
-        s.scan(trigger)
+        s.scan(trigger, test)
+        if trigger == "button":         # the MQTT Scan button: Home Assistant asked
+            self.note("ha_scan")
         return True
+
+    def note(self, kind: str):
+        """Record when something last happened (see ACTIVITY). Never raises."""
+        self.activity[kind] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            tmp = self.activity_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.activity, f)
+            os.replace(tmp, self.activity_path)
+        except OSError as e:
+            log.warning("access: could not save activity: %s", e)
 
     # --- config (panel) ------------------------------------------------------------
 
@@ -181,6 +207,7 @@ class AccessManager:
 
     def status(self) -> dict:
         return {"enabled": True, "mqtt_connected": bool(self.mqtt.connected),
+                "activity": dict(self.activity),
                 "scanners": [s.status() for s in self.scanners.values()]}
 
     def debug_zip(self, sid: str) -> bytes:

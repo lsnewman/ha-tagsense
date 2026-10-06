@@ -294,7 +294,7 @@ def test_access_off_by_default_and_not_imported(tmp_path):
                        capture_output=True, text=True)
     assert r.stdout.strip() == "ok", r.stderr
     api = Api(make_app(tmp_path))
-    assert api.state()["access"] == {"enabled": False, "error": None}
+    assert api.state()["access"] == {"enabled": False, "error": None, "scanners": []}
     for call in (lambda: api.access_status(), lambda: api.access_scan("door"),
                  lambda: api.access_create({"name": "Door"})):
         with pytest.raises(ApiError) as e:
@@ -317,6 +317,7 @@ def test_panel_manages_scanners_and_scans(tmp_path):
     sid = api.access_create({"name": "Front door", "source": "go2rtc", "go2rtc_stream": "doorbell",
                              "crop_x1": 0.4, "window_s": 5})["id"]
     assert sid == "front_door" and ScannerStore(acc.dir).load()[0].crop_x1 == 0.4
+    assert api.state()["access"]["scanners"] == [{"id": "front_door", "name": "Front door"}]   # for the nav
     m = acc.mqtt
     assert any("tagsense_access/front_door_code/config" in t for t, _, _ in m.client.published)
     api.access_scan(sid)
@@ -662,6 +663,43 @@ def test_verified_event_carries_a_confirmable_id(tmp_path):
     s.stop_event.set()
 
 
+def test_test_scan_is_marked_and_never_confirmable(tmp_path):
+    from app.access.confirm import ConfirmBook
+    s, m = scanner(tmp_path, [qr_frame()])
+    s.confirm = ConfirmBook()
+    passed = []
+    s.on_test_ok = lambda: passed.append(1)
+    s.thread.start()
+    s.scan("test", test=True)
+    assert wait_for(done(s, m))
+    ev = events(m)[0]
+    assert ev["event_type"] == "verified" and ev["test"] is True and "event_id" not in ev
+    assert passed == [1]
+    s.stop_event.set()
+
+
+def test_real_scan_during_a_test_window_is_real(tmp_path):
+    s, _ = scanner(tmp_path, [qr_frame()])
+    s.scan("test", test=True)
+    s.scan()                       # the doorbell rang meanwhile
+    assert s.window_test is False
+
+
+def test_setup_activity_is_recorded(tmp_path):
+    app = make_app(tmp_path, access_enabled=True)
+    api, acc = Api(app), app.access
+    sid = api.access_create({"name": "Door", "source": "go2rtc", "go2rtc_stream": "d"})["id"]
+    assert api.access_status()["activity"] == {}
+    api.access_scan(sid)                                  # the panel's Scan now: not Home Assistant
+    api.access_test(sid)
+    assert "ha_scan" not in acc.activity
+    acc.scan(sid)                                         # the MQTT Scan button
+    acc.note("confirm")
+    assert set(api.access_status()["activity"]) == {"ha_scan", "confirm"}
+    again = make_app(tmp_path, access_enabled=True)       # kept across restarts
+    assert set(again.access.activity) == {"ha_scan", "confirm"}
+
+
 def test_confirm_http_route(tmp_path, monkeypatch):
     import urllib.request
     from app import web
@@ -691,7 +729,9 @@ def test_confirm_http_route(tmp_path, monkeypatch):
     try:
         assert post(f"/api/confirm/{eid}")[0] == 401                       # no token
         assert post(f"/api/confirm/{eid}", "Bearer wrong")[0] == 401
+        assert "confirm" not in app.access.activity          # a wrong token does not count
         status, body = post(f"/api/confirm/{eid}", f"Bearer {token}")
+        assert "confirm" in app.access.activity
         assert status == 200 and body["confirmed"] is True and body["label"] == "Luke"
         assert post(f"/api/confirm/{eid}", f"Bearer {token}")[1] == {"confirmed": False}   # once
         # The address alone opens nothing else.

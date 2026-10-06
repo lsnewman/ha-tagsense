@@ -35,8 +35,8 @@ class HaUser:
     is_active: bool
 
 
-def fetch_users_ws(token: str, url: str = WS_URL, timeout: float = TIMEOUT_S) -> list[HaUser]:
-    """Home Assistant's user list over the Core WebSocket API."""
+def ws_command(token: str, command: str, url: str = WS_URL, timeout: float = TIMEOUT_S):
+    """One Core WebSocket command (through the Supervisor's proxy); returns its result."""
     import websocket                     # websocket-client; only needed here
 
     ws = websocket.create_connection(url, timeout=timeout)
@@ -48,19 +48,25 @@ def fetch_users_ws(token: str, url: str = WS_URL, timeout: float = TIMEOUT_S) ->
         auth = json.loads(ws.recv())
         if auth.get("type") != "auth_ok":
             raise RuntimeError(f"authentication refused ({auth.get('type')})")
-        ws.send(json.dumps({"id": 1, "type": "config/auth/list"}))
+        ws.send(json.dumps({"id": 1, "type": command}))
         while True:
             msg = json.loads(ws.recv())
             if msg.get("id") == 1:
                 break
         if not msg.get("success"):
-            raise RuntimeError(f"config/auth/list refused: {msg.get('error', {}).get('code')}")
-        return [HaUser(u["id"], u.get("name") or u.get("username") or "?",
-                       bool(u.get("is_owner")) or ADMIN_GROUP in (u.get("group_ids") or []),
-                       bool(u.get("is_active", True)))
-                for u in msg.get("result") or [] if not u.get("system_generated")]
+            raise RuntimeError(f"{command} refused: {msg.get('error', {}).get('code')}")
+        return msg.get("result")
     finally:
         ws.close()
+
+
+def fetch_users_ws(token: str, url: str = WS_URL, timeout: float = TIMEOUT_S) -> list[HaUser]:
+    """Home Assistant's user list over the Core WebSocket API."""
+    return [HaUser(u["id"], u.get("name") or u.get("username") or "?",
+                   bool(u.get("is_owner")) or ADMIN_GROUP in (u.get("group_ids") or []),
+                   bool(u.get("is_active", True)))
+            for u in ws_command(token, "config/auth/list", url, timeout) or []
+            if not u.get("system_generated")]
 
 
 class UserDirectory:

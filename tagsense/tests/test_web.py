@@ -74,7 +74,9 @@ def wait_for(cond, timeout=10):
 
 def test_state_and_startup_check(app):
     api = Api(app)
-    assert wait_for(lambda: api.state()["objects"][0]["state"] == "present")
+    # The state is published a moment before the annotated image is stored: wait for both.
+    assert wait_for(lambda: api.state()["objects"][0]["state"] == "present"
+                    and api.state()["objects"][0]["has_image"])
     o = api.state()["objects"][0]
     assert o["id"] == "bin" and o["last_corners"] and o["has_image"]
     assert api.history("bin")[0]["trigger"] == "startup"

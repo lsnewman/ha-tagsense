@@ -2,6 +2,83 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.1
+
+**Upgrading:** nothing to do. Your detection settings are copied into the
+panel's new **Settings** page on the first start, and everything else carries
+on as before. To get the unlock blueprint's support for several locks, import
+it again (your automation keeps its settings).
+
+- **Documentation site:** <https://lsnewman.github.io/ha-tagsense/>, built
+  from the repository's `docs/` folder and published when a release reaches
+  `main`. It is organised around the two parts, **TagSense Presence** and
+  **TagSense Access**, with search, and talks about a camera and starting a
+  scan rather than only a doorbell. The README and this Documentation tab are
+  now short overviews that link to it. The app's store description mentions
+  both parts.
+- **Blueprint: several locks.** The unlock blueprint's *Locks* field now
+  takes one lock or more (for example a deadbolt and a handle lock on one
+  door). They are unlocked together and, after the auto-lock time, every one
+  still unlocked is locked again. The wait for "unlocked" now carries on
+  after a minute, so one slow or offline lock cannot stop the others being
+  locked again. Automations already made from it keep working. Import the
+  blueprint again to get this.
+- **Health page.** One place to see whether everything is working: a short
+  list of anything to look at, the MQTT and Home Assistant connections, each
+  camera's last frame and errors, each object's last 24 hours (checks,
+  failures, discarded frames, state changes), the access scanners and the
+  recent log. **Download debug bundle** gives a zip to attach to a bug
+  report; it never contains passwords, tokens, keys, passes or codes.
+- **Use in automations.** Each object's page lists its entity ids, read
+  from Home Assistant so renamed entities are right, with copy buttons. It
+  also has ready-made automations to paste into Home Assistant's YAML editor:
+  not in place at a set time, gone for a long time, back in place, back but
+  turned the wrong way, and check straight away when something else happens.
+- Access wording no longer assumes a doorbell. It talks about a camera and
+  starting a scan; a doorbell is one example.
+- **Access: setup checklist and *Test my setup*.** The Access page shows a
+  checklist ticked from what TagSense has seen: login connected, scanner
+  added, a pass or code exists, a test passed, a doorbell automation started
+  a scan, Home Assistant confirmed an event. *Test my setup* on a scanner runs
+  a test scan with your pass or a 1-use test code, and explains the result.
+  Test events carry `test: true` and are never confirmable, so they cannot
+  unlock anything. The blueprint now skips them before the confirm step
+  (re-import it to get this; the old one already refused them at the
+  confirm step).
+- **Links to a page.** Each panel page now has its own address in Home
+  Assistant, for example `/<panel>/pass` for My pass or `/<panel>/obj/bin`
+  for an object, so a dashboard button can open it directly. The browser's
+  Back button and bookmarks follow the panel's pages. The My pass page shows
+  its shortcut.
+- **Detection settings moved into the panel (Settings).** The options that
+  apply to every object (shape gates, frames per check, hits and misses
+  needed, confirmation delay, frame sanity thresholds, log level) are now
+  changed under **Settings**, and take effect without a restart. On its
+  first start, 0.5.1 copies your current values from the Configuration tab,
+  so nothing changes on upgrade. After that the Configuration tab's copies
+  are ignored, and they are now optional: a new install does not show them,
+  and you can clear yours once 0.5.1 has started. A later release removes
+  them. Only `go2rtc_url`, the MQTT override and the access login
+  stay there. A bad value is refused when you save it and can never stop the
+  app from starting. Export / import now carries these settings too.
+- **New panel layout.** TagSense is now two parts, **Presence** (tagged
+  objects) and **Access** (door codes), with **Settings** beside them. On a
+  computer they sit in a sidebar, with each object and scanner listed under
+  its section; on a phone they become tabs. Buttons such as *Add object* and
+  *Add scanner* moved onto their section's page. Export / import moved to
+  **Settings → Backup**. The Access section is always listed: while it is off
+  it explains what it does and how to turn it on.
+- **Smear threshold default lowered from 0.5 to 0.2** (`sanity_min_ratio`).
+  With a tight search area and the object gone, low morning sun made good
+  frames score about 0.4. They were discarded as smeared, and the object read
+  *unknown* for hours instead of *absent*. Real smeared frames score about
+  0.01, so 0.2 still catches them. **Existing installs keep their saved value**:
+  if you have seen long *unknown* periods with the *Discard rate* near 100%,
+  set *Smear threshold* to 0.2 in the panel under **Settings**.
+- Panel: an object's page always loads its chart, history and snapshots when
+  opened. Before, returning to the page before the next check (e.g. right
+  after an import) showed "No checks yet." over a full history.
+
 ## 0.5.0
 
 **Upgrading:** nothing changes for your objects unless you opt in. Existing
