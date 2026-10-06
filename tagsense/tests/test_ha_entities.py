@@ -1,4 +1,6 @@
 """Entity ids for the panel's automation examples."""
+import time
+
 import pytest
 
 from app.ha_entities import EntityDirectory, default_ids, slugify
@@ -16,7 +18,7 @@ def test_default_ids_follow_home_assistant():
     assert slugify("Café chair!") == "cafe_chair"
 
 
-def test_registry_wins_and_failures_fall_back():
+def test_registry_wins_and_failures_fall_back(monkeypatch):
     calls = []
 
     def fetch():
@@ -27,6 +29,7 @@ def test_registry_wins_and_failures_fall_back():
                 "tagsense_bin_problem": "binary_sensor.tagsense_bin_tag_rejected",
                 "tagsense_bin_enabled": "switch.tagsense_bin_enabled"}
     d = EntityDirectory(fetch=fetch)
+    monkeypatch.setattr(time, "monotonic", lambda: 5.0)       # just after a boot
     r = d.for_object("bin", "Bin")
     assert r["from_registry"] and r["entities"]["presence"] == "binary_sensor.wheelie_bin"
     d.for_object("bin", "Bin")

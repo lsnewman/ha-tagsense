@@ -49,7 +49,7 @@ class EntityDirectory:
         self._fetch = fetch or self._fetch_ws
         self._lock = threading.Lock()
         self._ids: dict[str, str] = {}
-        self._at = 0.0
+        self._at: float | None = None   # never read yet (not 0: monotonic time can be small after a boot)
         self.error: str | None = None
 
     def _fetch_ws(self) -> dict[str, str]:
@@ -61,7 +61,7 @@ class EntityDirectory:
 
     def _current(self) -> dict[str, str]:
         with self._lock:
-            if time.monotonic() - self._at > CACHE_S:
+            if self._at is None or time.monotonic() - self._at > CACHE_S:
                 try:
                     self._ids, self.error = self._fetch(), None
                 except Exception as e:      # noqa: BLE001 - fall back to the default ids
