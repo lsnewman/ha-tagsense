@@ -4,6 +4,10 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
 
 ## 0.5.1 (in development)
 
+- **Documentation rewritten** around the two parts, **TagSense Presence**
+  and **TagSense Access**: the README and the Documentation tab cover both in
+  full, with a new Access screenshot, and talk about a camera and starting a
+  scan rather than only a doorbell. The app's store description mentions both.
 - **Blueprint: several locks.** The unlock blueprint's *Locks* field now
   takes one lock or more (for example a deadbolt and a handle lock on one
   door). They are unlocked together and, after the auto-lock time, every one

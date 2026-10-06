@@ -1,11 +1,72 @@
 # TagSense
 
-TagSense detects whether a tagged object (a wheelie bin, a car, a chair, ...)
-is in place from a printed AprilTag (family **tag16h5** by default) stuck on it. It grabs camera frames, checks
-them, and publishes **present / absent / unknown** to Home Assistant via MQTT
-discovery. Each frame check takes about 40 ms of CPU on a cropped region.
+TagSense uses cameras you already have for two things, both managed from the
+**TagSense panel** in the sidebar and published to Home Assistant through
+MQTT discovery:
 
-## Before you rely on it
+- **TagSense Presence:** is a tagged object (a wheelie bin, a car, a chair,
+  ...) in its usual place? A printed AprilTag on the object is looked for in
+  camera frames, and the object is reported **present / absent / unknown**,
+  with how far the tag is turned. Each frame check takes about 40 ms of CPU
+  on a cropped region.
+- **TagSense Access** (off until you turn it on): is the QR code someone holds
+  up to a camera valid? TagSense verifies rotating passes and time-limited
+  codes, and reports events. **It never unlocks anything**; your automations
+  decide what a verified code does.
+
+## Requirements
+
+- The MQTT integration with the Mosquitto broker app. Credentials are fetched
+  from the Supervisor automatically.
+- A camera:
+  - **go2rtc** (recommended): for example, the go2rtc bundled with the Frigate
+    app on port 1984. Set `go2rtc_url` on the Configuration tab.
+  - **Home Assistant camera**: any camera entity, through the camera proxy.
+    This is often lower resolution (Frigate's detect stream), so it has less
+    margin.
+- For Access: a separate MQTT login (see *Turning it on* under TagSense Access).
+
+The **Configuration** tab only holds what the panel needs before it can work:
+`go2rtc_url`, an optional MQTT broker override, and Access's on switch and
+login. Everything else is in the panel and takes effect without a restart.
+
+## The panel
+
+On a computer the panel has a sidebar; on a phone the same sections are tabs.
+
+- **Presence:** every object, and each object's page (search area, last
+  check, settings, 24-hour chart, recent checks, snapshots, diagnostics, *Use
+  in automations*, *Print tag*).
+- **Access:** setup checklist, passes, static codes, *Confirm events*, and the
+  scanners. While Access is off it explains how to turn it on.
+- **Settings:** the detection settings shared by every object, and Backup
+  (export / import).
+- **Health:** whether everything is working, and a debug bundle.
+- **My pass:** your own Access pass, if you have one.
+
+### Who sees what
+
+Every Home Assistant user sees the TagSense entry in the sidebar.
+**Admins** get the whole panel. **Everyone else gets only "My pass"**: their
+own pass, if an admin has given them one. TagSense asks Home Assistant who is
+an admin. If it cannot tell, for example because Home Assistant is
+restarting, nobody counts as an admin until it can.
+
+**Links to a page.** The panel's pages have their own addresses under the
+sidebar entry's path (shown in the browser's address bar), so a dashboard
+button with the tap action *Navigate* can open one directly:
+
+- `/<panel>/pass`: My pass (for anyone). The My pass page shows the exact path.
+- `/<panel>/obj/<object id>`, `/<panel>/access`, `/<panel>/settings`: admins.
+
+`<panel>` is the part of the address after your Home Assistant host when you
+open TagSense from the sidebar (for example `/744e9206_tagsense`). This needs
+TagSense opened as a panel in Home Assistant: it does not work when the
+panel is embedded in a dashboard card.
+
+## TagSense Presence
+
+### Before you rely on it
 
 - **Run it in shadow mode first.** Keep your existing detector (for example a
   Frigate classifier) running alongside TagSense for a few weeks, including
@@ -20,22 +81,9 @@ discovery. Each frame check takes about 40 ms of CPU on a cropped region.
   detection on the crop. Use the *Fetch time* and *Detect time* diagnostics,
   plus the app's CPU graph, to compare against what it replaces.
 
-## Requirements
-
-- The MQTT integration with the Mosquitto broker app. Credentials are fetched
-  from the Supervisor automatically.
-- A frame source:
-  - **go2rtc** (recommended): for example, the go2rtc bundled with the Frigate
-    app on port 1984. Give the full stream resolution.
-  - **ha_camera**: any HA camera entity, through the camera proxy. This is
-    often lower resolution (Frigate's detect stream), so it has less decode
-    margin.
-
-## Configuration
-
 ### Objects
 
-Objects are managed in the **TagSense panel** in the sidebar: click **Add
+Objects are managed in the **TagSense panel** under **Presence**: click **Add
 object**, give it a name, the tag family and ID printed on it, and the camera that sees
 it (a go2rtc stream or a Home Assistant camera). Then draw its search area on
 the live frame. Changes apply straight away.
@@ -52,7 +100,7 @@ the live frame. Changes apply straight away.
   tag sits on a light surface.
 - **Fit to tag** in the search-area editor sets the box to the learned tag
   position, plus 3x the tag size on each side. It still needs *Save*.
-- **Export / import** (bottom of the overview): all objects and their
+- **Export / import** (Settings → Backup): all objects and their
   settings as text. Importing adds new objects and updates ones with the same
   ID; objects not in the text are kept.
 - **Last 24 hours** chart and **State changes** snapshots are on each
@@ -85,7 +133,7 @@ options still listed there only seed **Settings** on the first start of
 | `log_level` | `info` | One line per check at `info`. |
 | `mqtt_*` | | **Configuration tab.** Optional overrides. Leave unset to use the Supervisor's broker. |
 
-## Entities
+### Entities
 
 Each object is its own device, **TagSense `<name>`**, with these entities:
 
@@ -151,7 +199,7 @@ Each object is its own device, **TagSense `<name>`**, with these entities:
   the accepted reads; compare with `max_aspect`), sanity
   ratio, miss streak, crop brightness and contrast.
 
-## Using it in automations
+### Using it in automations
 
 Each object's page has a **Use in automations** card: its entity ids (read
 from Home Assistant, so renamed entities show their real ids) and
@@ -161,17 +209,7 @@ and check straight away when something else happens). The main entity is
 the *In place* binary sensor: `on` in its usual place, `off` gone
 (confirmed), unavailable while unknown.
 
-## Health
-
-The panel's **Health** page lists anything that needs a look (MQTT down, a
-camera with no recent frame, an object stuck at unknown, a high discard rate,
-a locked-out scanner), with each camera's and object's last 24 hours, the
-recent log and a **Download debug bundle** button. The bundle holds the log,
-settings, objects' status and checks, and the scanners' settings and recent
-events. Passwords, tokens and keys are hidden, and nothing from the access
-code store (keys, passes, codes) is included.
-
-## Rotation: "has it been turned round?"
+### Rotation: "has it been turned round?"
 
 There is no built-in "turned" sensor: what counts as turned is up to you.
 For example, a template binary sensor (Settings > Devices & services >
@@ -192,7 +230,7 @@ put it on the lid. A tag on one side of the object disappears when it is
 turned 180°; that would need a second tag with another ID, as a second
 object, on the opposite side.
 
-## How a check decides
+### How a check decides
 
 1. Fetch up to `burst_size` frames. If the object is already present and the
    first `present_min_hits` frames all hit, the rest are skipped. Each frame is decoded and scored for smearing.
@@ -216,7 +254,7 @@ object, on the opposite side.
 
 State and settings are stored in `/data` and survive restarts.
 
-## Tag families
+### Tag families
 
 The detector settings were tuned on real frames for **tag16h5 only**. The
 other families use the same settings and are **untested on a real camera**.
@@ -241,10 +279,17 @@ families can share a camera, even with the same ID. If you switch an
 existing object to a new tag, press *Reset learned position* once the new
 tag is in place.
 
-## Access codes at the door (off by default)
+### Tag and print notes
 
-A visitor rings the doorbell and holds up a code on their phone. TagSense
-checks it and reports a **verified** event (or why not) to Home Assistant.
+- Use the object's family (tag16h5 by default), with a white quiet zone
+  about as wide as the black border. A matte finish is best.
+- A larger print is the main way to gain decode margin at oblique angles.
+## TagSense Access (off by default)
+
+When something starts a scan (for example a doorbell press, a button or a
+motion sensor), someone holds up a QR code on their phone to a camera.
+TagSense checks it and reports a **verified** event (or why not) to Home
+Assistant.
 **TagSense never unlocks anything.** It holds no lock credentials and has no
 path to a lock. Your automations decide what a verified event does.
 
@@ -277,34 +322,14 @@ events* below for that.
    restart TagSense.
 
 If the login is missing, or is the same as the shared app login, access stays
-off and the panel's **Access** page says why. The bin sensor is unaffected
-either way.
-
-### Who sees what in the panel
-
-Every Home Assistant user sees the TagSense entry in the sidebar.
-**Admins** get the whole panel. **Everyone else gets only "My pass"**: their
-own pass, if an admin has given them one. TagSense asks Home Assistant who is
-an admin. If it cannot tell, for example because Home Assistant is
-restarting, nobody counts as an admin until it can.
-
-**Links to a page.** The panel's pages have their own addresses under the
-sidebar entry's path (shown in the browser's address bar), so a dashboard
-button with the tap action *Navigate* can open one directly:
-
-- `/<panel>/pass`: My pass (for anyone). The My pass page shows the exact path.
-- `/<panel>/obj/<object id>`, `/<panel>/access`, `/<panel>/settings`: admins.
-
-`<panel>` is the part of the address after your Home Assistant host when you
-open TagSense from the sidebar (for example `/744e9206_tagsense`). This needs
-TagSense opened as a panel in Home Assistant: it does not work when the
-panel is embedded in a dashboard card.
+off and the panel's **Access** page says why. Presence is unaffected either
+way.
 
 ### Scanners
 
-Open **Access** in the panel and add a **scanner**: the doorbell camera (a
-go2rtc stream, an HA camera, or both), the area of the frame where a visitor
-holds up their phone, and how long a scan lasts (default 20 s). After adding
+Open **Access** in the panel and add a **scanner**: the camera that reads
+codes (a go2rtc stream, an HA camera, or both), the area of the frame where
+people hold up their phone, and how long a scan lasts (default 20 s). After adding
 it, its page has the same scan-area editor as an object: drag a box on a live
 frame (any readable code in the frame is blacked out there). Each scanner is a
 device, **TagSense Access `<name>`**, with these entities:
@@ -316,14 +341,14 @@ device, **TagSense Access `<name>`**, with these entities:
 - **Scanning** (binary sensor): on while a window is open.
 - **Last scan** (image): the scan area, with every code blacked out.
 
-A doorbell press starts the scan:
+An automation starts the scan, for example on a doorbell press:
 
 ```yaml
 automation:
-  - alias: "Doorbell: scan for an access code"
+  - alias: "Front door: scan for an access code"
     triggers:
       - trigger: state
-        entity_id: binary_sensor.doorbell_doorbell   # your doorbell's press sensor
+        entity_id: binary_sensor.front_door_doorbell   # whatever should start a scan
         to: "on"
     actions:
       - action: button.press
@@ -409,7 +434,7 @@ has actually seen rather than from a form:
 3. there is a pass or a static code;
 4. **Test my setup** has read a code;
 5. Home Assistant has started a scan with the scanner's *Scan* button (your
-   doorbell automation);
+   automation that starts scans);
 6. Home Assistant has asked TagSense to confirm an event (the
    `rest_command` and the unlock blueprint are set up).
 
@@ -420,7 +445,7 @@ away once everything is ticked.
 tests. Show your pass, or press *Issue a 1-use test code* (it is valid for 15
 minutes, and revoked when you close the test if it was not used), then
 *Start test scan* and hold the code up to the camera. The result says in
-plain words what happened and what to try if it failed. A real doorbell scan
+plain words what happened and what to try if it failed. A real scan started
 during a test is a real scan.
 
 ### Passes and static codes (panel, admins)
@@ -451,7 +476,7 @@ A scan falls back to snapshots if the stream fails, and the scanner card
 shows the timing of the last scan. A code has to be about 100 px across in the
 frame (4-5 px per QR module). TagSense's codes are deliberately small (QR
 version 2), and the ZXing decoder copes with an over-bright phone screen. Ask
-visitors to use medium-high screen brightness (maximum can make it worse) and
+people to use medium-high screen brightness (maximum can make it worse) and
 to tilt the phone away from lights. Use the highest-resolution stream the
 camera offers; a low-resolution stream (for example 896x672) still reads a
 code held close. *Keep raw scan frames* (per scanner, off by default) saves up
@@ -461,7 +486,7 @@ to 50 frames for 24 h for checking; TagSense codes in them are blacked out.
 
 - **Forged or altered codes:** every code is signed (HMAC-SHA256, 80-bit
   tag); a changed character fails.
-- **Replayed codes** (a code filmed or photographed, or a doorbell recording):
+- **Replayed codes** (a code filmed or photographed, or a camera recording):
   each pass code works once and only for about a minute; static codes have
   limited uses and an expiry.
 - **Forwarded static codes:** cannot be prevented, which is why they expire
@@ -537,8 +562,13 @@ the token; update `secrets.yaml` afterwards. Only requests from Home
 Assistant's own address reach the confirm step at all, and the token stops
 anything else that shares that address (apps on the host network).
 
-## Tag and print notes
+## Health
 
-- Use the object's family (tag16h5 by default), with a white quiet zone
-  about as wide as the black border. A matte finish is best.
-- A larger print is the main way to gain decode margin at oblique angles.
+The panel's **Health** page lists anything that needs a look (MQTT down, a
+camera with no recent frame, an object stuck at unknown, a high discard rate,
+a locked-out scanner), with each camera's and object's last 24 hours, the
+recent log and a **Download debug bundle** button. The bundle holds the log,
+settings, objects' status and checks, and the scanners' settings and recent
+events. Passwords, tokens and keys are hidden, and nothing from the access
+code store (keys, passes, codes) is included.
+
