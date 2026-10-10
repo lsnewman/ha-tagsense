@@ -40,6 +40,15 @@ from the Access code store (keys, passes, codes) is included.**
     *Crop brightness* and *Crop contrast* with daytime. A larger print helps
     more than any setting.
 
+??? question "The tag is plainly in view but never found"
+    Check that the tag is not mirrored. If the camera has a mirror or flip
+    setting switched on, or the tag was printed mirrored, no rotation of the
+    print will help. Until the tag has been seen once, TagSense looks for a
+    mirrored tag after a miss and writes *found mirrored* on the Last crop
+    image and in Recent checks. Switch the camera setting off, or turn on
+    **Mirrored** in the object's settings. A quick test is to hold up some
+    text: if it reads back to front in the camera image, the image is mirrored.
+
 ??? question "*Tag rejected* is on"
     The tag was read but the shape gate rejected it in 3 checks in a row. The
     notification says whether it was too skewed (raise **Shape gate, max

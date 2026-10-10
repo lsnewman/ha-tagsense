@@ -1,6 +1,6 @@
 """Offline check over a folder of frames.
 
-    python -m app.check DIR [--crop x1,y1,x2,y2] [--tag-id 5] [--family tag16h5]
+    python -m app.check DIR [--crop x1,y1,x2,y2] [--tag-id 5] [--family tag16h5] [--mirrored]
                             [--save-annotated OUT]
 
 Folder names are used as labels: a hit under absent/ is flagged PHANTOM, a miss
@@ -34,6 +34,7 @@ def main(argv=None) -> int:
     ap.add_argument("--crop", type=parse_crop, default=DEFAULT_CROP)
     ap.add_argument("--tag-id", type=int, default=5)
     ap.add_argument("--family", default=DEFAULT_FAMILY, choices=sorted(FAMILIES))
+    ap.add_argument("--mirrored", action="store_true", help="the camera shows the tag left-right reversed")
     ap.add_argument("--max-aspect", type=float, default=DEFAULT_MAX_ASPECT,
                     help="shape gate: reject target decodes above this edge ratio (0 = off)")
     ap.add_argument("--min-ratio", type=float, default=DEFAULT_MIN_RATIO)
@@ -49,7 +50,7 @@ def main(argv=None) -> int:
     if a.save_annotated:
         a.save_annotated.mkdir(parents=True, exist_ok=True)
 
-    detector = Detector(a.tag_id, a.max_aspect, a.family)
+    detector = Detector(a.tag_id, a.max_aspect, a.family, mirrored=a.mirrored)
     ratios = defaultdict(list)
     problems = 0
     print(f"crop={a.crop} tag_id={a.tag_id} min_ratio={a.min_ratio} min_h={a.min_h}")

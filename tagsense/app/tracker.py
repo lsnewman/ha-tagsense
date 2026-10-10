@@ -90,7 +90,10 @@ class TrackedObject:
         self.settings_path = os.path.join(d, "settings.json")
         self.state_path = os.path.join(d, "state.json")
         self.reference_path = os.path.join(d, "reference.json")
-        self.detector = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family)
+        self.detector = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family, mirrored=oc.mirrored)
+        # The same tag the other way round, tried on one frame of a miss only
+        # until the tag has been seen once (see _mirror_hint).
+        self.mirror_probe = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family, mirrored=not oc.mirrored)
         self.settings = Settings.load(self.settings_path)
         self.decision = dec.Decision.load(self.state_path)
         self.reference = Reference.load(self.reference_path)
@@ -357,6 +360,11 @@ class TrackedObject:
                 log.warning("[%s] shape gate: %s", self.id, ph.describe())
             else:
                 log.info("[%s] ignored decode: %s", self.id, ph.describe())
+        mirror_note = ""
+        if not hits and image_src and (hint := self._mirror_hint(image_src, crop)):
+            mirror_note = "tag found mirrored: see Mirrored setting"
+            warnings.append(hint)
+            log.warning("[%s] %s", self.id, hint)
         if rejected := [ph for ph in phantoms if ph.rejected_target]:
             warnings.append(f"tag id {self.detector.tag_id} decode rejected by shape gate: "
                             + "; ".join(sorted({ph.reason for ph in rejected})))
@@ -445,7 +453,7 @@ class TrackedObject:
                 "outcome": outcome, "reported": value})
         jpeg = None
         if image_src is not None:
-            jpeg = annotate(image_src.check.bgr, image_src.det, phantoms)
+            jpeg = annotate(image_src.check.bgr, image_src.det, phantoms, note=mirror_note)
             self.last_jpeg = jpeg
             if phantoms:
                 self.last_phantom_jpeg = jpeg
@@ -460,6 +468,18 @@ class TrackedObject:
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
                  outcome, value, reason, self.decision.miss_streak)
         return outcome
+
+    def _mirror_hint(self, r: FrameResult, crop) -> str | None:
+        """A tag that has never been seen may be mirrored (a camera flip setting,
+        or a mirrored print), which no rotation fixes. One extra decode of one
+        frame per miss, and only before the first hit, so normal running never
+        pays for it."""
+        if self.reference.hits or r.check is None or r.check.bgr is None:
+            return None
+        if not self.mirror_probe.detect(r.check.bgr, crop).found:
+            return None
+        return (f"tag {self.detector.tag_id} found mirrored: turn "
+                f"{'off' if self.oc.mirrored else 'on'} Mirrored in this object's settings")
 
     def _size_gate(self, r: FrameResult):
         """Shape gate, part 2: reject a target decode far smaller than the learned

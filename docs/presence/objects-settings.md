@@ -10,6 +10,7 @@ object's page. Changes apply straight away, without restarting the app.
 | **Name** | What the tag is on. It names the device ("TagSense Bin") and its main sensor, and can be changed at any time. |
 | **ID** | A short, stable identifier (lowercase letters, digits, `_`) used in entity IDs, MQTT topics and the data folder. Made from the name unless you type one, and **cannot be changed later**. Renaming the object keeps it, so its entities and history stay. |
 | **Tag family** and **Tag ID** | What is printed on the object. Two objects on the same camera need different tags (same family and ID); the same tag on different cameras is fine. |
+| **Mirrored** | The camera shows the tag left-right reversed: a mirror or flip setting on the camera, or a mirrored print. Off by default. Until the tag has been seen once, a check that finds nothing also looks for it the other way round, on one frame only, and says so if it finds it. |
 | **Camera** | A **go2rtc stream** (fetched as `<go2rtc_url>/api/frame.jpeg?src=<stream>`; choose the highest-resolution stream that connects directly to the camera) or a **Home Assistant camera**, read through the camera proxy. |
 | **Fallback** | Try the other source when the main one fails: a go2rtc object falls back to its Home Assistant camera (often lower resolution), and a camera object to its go2rtc stream. |
 

@@ -34,7 +34,7 @@ CONFIRM_RE = re.compile(r"/api/confirm/([A-Za-z0-9_-]{16,64})")
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 8 * 1024 * 1024        # an import with a day of chart history per object
 CONFIG_FIELDS = ("name", "tag_family", "tag_id", "source", "go2rtc_stream", "camera_entity",
-                 "fallback")
+                 "fallback", "mirrored")
 
 
 class ApiError(Exception):

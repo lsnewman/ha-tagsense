@@ -1,5 +1,5 @@
 name: TagSense (dev)
-version: "0.5.2b1"
+version: "0.5.2b2"
 slug: tagsense
 description: "Presence: is a tagged object (bin, car, chair...) in its place, from AprilTags. Access (optional): verify QR codes shown to a camera. Via MQTT."
 url: https://github.com/lsnewman/ha-tagsense

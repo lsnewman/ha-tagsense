@@ -2,6 +2,14 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.2 (in development)
+
+- **Mirrored tags:** a new **Mirrored** option on each object, for a camera
+  that shows the tag left-right reversed (a mirror or flip setting on the
+  camera, or a mirrored print). Until a tag has been seen once, a check that
+  finds nothing also looks for it mirrored, on one frame only, and says
+  *found mirrored* on the Last crop image and in Recent checks.
+
 ## 0.5.1
 
 **Upgrading:** nothing to do. Your detection settings are copied into the

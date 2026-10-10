@@ -1243,6 +1243,10 @@ async function objectForm(id) {
       <span id="f-tag-wrap">${tagIdControl(famOf(v), v.tag_id)}</span>
       <div class="hint">The ID printed on this object. Objects on the same camera need different IDs.
         <a href="#" target="_blank" id="f-print">Print this tag</a></div>
+      <label class="inline" style="margin-top:12px"><input type="checkbox" id="f-mirrored" ${v.mirrored ? "checked" : ""}>
+        Mirrored: the camera shows the tag left-right reversed</label>
+      <div class="hint">Turn on only if the tag is never found and text looks back to front in this camera's image
+        (a mirror or flip setting on the camera), or the tag was printed mirrored. Rotating a mirrored tag does not help.</div>
       <label>Camera source</label>
       <div class="row">
         <label class="inline"><input type="radio" name="src" value="go2rtc" ${v.source === "go2rtc" ? "checked" : ""}> go2rtc stream</label>
@@ -1303,7 +1307,8 @@ async function objectForm(id) {
       tag_id: +document.getElementById("f-tag").value, source: srcSel(),
       go2rtc_stream: document.getElementById("f-stream").value.trim(),
       camera_entity: document.getElementById("f-entity").value,
-      fallback: document.getElementById("f-fallback").checked };
+      fallback: document.getElementById("f-fallback").checked,
+      mirrored: document.getElementById("f-mirrored").checked };
     if (!o) body.id = document.getElementById("f-id").value.trim();
     const btn = e.target.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Saving…";
