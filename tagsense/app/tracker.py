@@ -98,7 +98,8 @@ class TrackedObject:
         self.decision = dec.Decision.load(self.state_path)
         self.reference = Reference.load(self.reference_path)
         self.sched = Scheduler(time.monotonic(), self.settings.poll_interval,
-                               tuning.confirm_delay_s, self.settings.enabled)
+                               tuning.confirm_delay_s, self.settings.enabled,
+                               self.settings.slowdown_max)
         self.camera = None                  # CameraWorker, set by the app
         self.known_ids: set[int] = set()   # other objects' tags (same family) on this camera
         self.last_phantom: dict | None = None
@@ -139,7 +140,8 @@ class TrackedObject:
         s = self.settings
         return {"poll_interval": s.poll_interval, "crop_x1": s.crop_x1, "crop_y1": s.crop_y1,
                 "crop_x2": s.crop_x2, "crop_y2": s.crop_y2, "enabled": s.enabled,
-                "rotation_steps": s.rotation_steps, "moved_threshold": s.moved_threshold}
+                "rotation_steps": s.rotation_steps, "moved_threshold": s.moved_threshold,
+                "slowdown_max": s.slowdown_max}
 
     def on_setting(self, key: str, value: str, from_api: bool = False):
         with self.cond:
@@ -150,6 +152,8 @@ class TrackedObject:
                 now = time.monotonic()
                 if key == "poll_interval":
                     self.sched.set_poll_interval(self.settings.poll_interval, now)
+                elif key == "slowdown_max":
+                    self.sched.set_slowdown(self.settings.slowdown_max, now)
                 elif key == "enabled":
                     self.sched.set_enabled(self.settings.enabled, now)
                     self._publish_state_locked()
@@ -425,12 +429,17 @@ class TrackedObject:
 
         with self.cond:
             before, _ = self.decision.reported(self.cfg, self.settings.enabled)
-            outcome = self.decision.update(res, self.cfg, now, self.settings.poll_interval)
+            # A miss streak expires after 3 intervals: the longest one in use.
+            outcome = self.decision.update(res, self.cfg, now,
+                                           self.settings.poll_interval * self.settings.slowdown_max)
             self.decision.save(self.state_path)
             if rejected:
                 self.last_reject_reasons = sorted({ph.reason for ph in rejected})
+            after = self.decision.reported(self.cfg, self.settings.enabled)[0]
+            steady = after == before and ((outcome == dec.HIT and after == dec.PRESENT)
+                                          or (outcome == dec.MISS and after == dec.ABSENT))
             self.sched.on_result(trigger, outcome, self.decision.miss_streak,
-                                 self.cfg.absent_checks, time.monotonic())
+                                 self.cfg.absent_checks, time.monotonic(), steady)
             prev_rotation = self.rotation
             if angle is not None:
                 self.rotation_angle = angle
@@ -586,6 +595,7 @@ class TrackedObject:
                 "last_seen": iso(self.decision.last_seen_ts),
                 "miss_streak": self.decision.miss_streak,
                 "settings": self.settings_values(),
+                "current_interval_s": self.sched.poll_interval if self.sched.factor > 1 else None,
                 "reference": self.reference.as_attrs()
                 | {"centre": [self.reference.cx, self.reference.cy] if self.reference.hits else None,
                    "size": self.reference.size if self.reference.hits else None,

@@ -20,6 +20,10 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   (in tag widths) and a **Moved** binary sensor, on past the per-object
   **Moved threshold** (default 3), show when the object is somewhere other
   than home. Reset learned position also resets home.
+- **Slow down when settled:** an optional per-object setting (off by
+  default). After 5 checks in a row that only confirm the state, the poll
+  interval doubles, up to the chosen limit; a miss while present, a state
+  change or Check now goes straight back to the poll interval.
 
 ## 0.5.1
 

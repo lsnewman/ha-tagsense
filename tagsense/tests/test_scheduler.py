@@ -1,5 +1,5 @@
 from app.decision import FAILED, HIT, INCONCLUSIVE, MISS
-from app.scheduler import CONFIRM, MANUAL, POLL, STARTUP, Scheduler
+from app.scheduler import CONFIRM, MANUAL, POLL, SHARED, STARTUP, STEADY_CHECKS, Scheduler
 
 ABSENT_CHECKS = 3
 
@@ -98,3 +98,46 @@ def test_set_poll_interval_reschedules():
     s = Scheduler(0, poll_interval=3600)
     s.set_poll_interval(10, 100)
     assert s.due(110) == POLL
+
+
+def steady_run(s, n, now=0, trigger=POLL):
+    for _ in range(n):
+        s.on_result(trigger, HIT, 0, ABSENT_CHECKS, now, steady=True)
+
+
+def test_slowdown_doubles_up_to_the_cap():
+    s = Scheduler(0, poll_interval=60, slowdown_max=4)
+    steady_run(s, STEADY_CHECKS - 1)
+    assert s.poll_interval == 60
+    steady_run(s, 1)
+    assert s.poll_interval == 120 and s.next_poll == 120
+    steady_run(s, STEADY_CHECKS, trigger=SHARED)          # shared checks count too
+    assert s.poll_interval == 240
+    steady_run(s, 3 * STEADY_CHECKS)
+    assert s.poll_interval == 240                         # capped at 4x
+    s3 = Scheduler(0, poll_interval=60, slowdown_max=3)
+    steady_run(s3, 3 * STEADY_CHECKS)
+    assert s3.poll_interval == 180                        # cap need not be a power of 2
+
+
+def test_slowdown_resets_on_anything_unsteady():
+    for event in ("miss", "manual", "confirm", "startup", "interval", "max"):
+        s = Scheduler(0, poll_interval=60, slowdown_max=8)
+        steady_run(s, 2 * STEADY_CHECKS)
+        assert s.poll_interval == 240
+        if event == "miss":
+            s.on_result(POLL, MISS, 1, ABSENT_CHECKS, 0, steady=False)
+        elif event in ("manual", "confirm", "startup"):
+            trig = {"manual": MANUAL, "confirm": CONFIRM, "startup": STARTUP}[event]
+            s.on_result(trig, HIT, 0, ABSENT_CHECKS, 0, steady=True)
+        elif event == "interval":
+            s.set_poll_interval(60, 0)
+        else:
+            s.set_slowdown(4, 0)
+        assert (s.poll_interval, s.steady) == (60, 0), event
+
+
+def test_slowdown_off_by_default():
+    s = Scheduler(0, poll_interval=60)
+    steady_run(s, 10 * STEADY_CHECKS)
+    assert s.poll_interval == 60

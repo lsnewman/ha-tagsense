@@ -46,7 +46,8 @@ or more cameras; each is its own device in Home Assistant.
     - Not seeing it is weak evidence (glare, darkness, a person in the way), so
       **absent** is only reported after several clean misses in a row. The
       count resets if the last miss is older than 3 poll intervals (at least 5
-      minutes), so misses separated by an outage cannot add up.
+      minutes; with *Slow down when settled*, 3 of the longest interval), so
+      misses separated by an outage cannot add up.
     - A read rejected by the shape gate is not the tag, so it counts as a miss.
       Three such checks in a row raise a *Tag rejected* alert, in case the gate
       is rejecting the real tag.

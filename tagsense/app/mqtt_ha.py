@@ -23,7 +23,7 @@ SUPPORT_URL = "https://github.com/lsnewman/ha-tagsense"
 ENUM_PRESENT, ENUM_ABSENT, ENUM_UNKNOWN = "present", "absent", "unknown"
 
 SETTING_KEYS = ("poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2", "enabled",
-                "rotation_steps", "moved_threshold")
+                "rotation_steps", "moved_threshold", "slowdown_max")
 
 # (key, name, extra discovery fields); "{attrs}" is replaced by an attributes topic
 DIAGNOSTICS = [
@@ -211,6 +211,11 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
             "min": 0, "max": 86400, "step": 1, "unit_of_measurement": "s",
             "icon": "mdi:timer-outline",
             "command_topic": t.set("poll_interval"), "state_topic": t.setting("poll_interval"),
+            "retain": True}),
+        cfg("number", "slowdown_max", {
+            "name": "Slow down when settled", "entity_category": "config", "mode": "box",
+            "min": 1, "max": 8, "step": 1, "icon": "mdi:timer-sand",
+            "command_topic": t.set("slowdown_max"), "state_topic": t.setting("slowdown_max"),
             "retain": True}),
         cfg("image", "last_crop", {"name": "Last crop", "image_topic": t.image,
                                    "content_type": "image/jpeg"}),

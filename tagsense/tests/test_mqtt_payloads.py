@@ -49,7 +49,7 @@ def test_expected_components_and_attribute_topics():
     comps = {t.split("/")[1] for t in cfgs}
     assert comps == {"binary_sensor", "sensor", "button", "switch", "number", "image"}
     numbers = [p for t, p in cfgs.items() if t.split("/")[1] == "number"]
-    assert len(numbers) == 7 and all(p["retain"] is True for p in numbers)
+    assert len(numbers) == 8 and all(p["retain"] is True for p in numbers)
     warn = cfgs["homeassistant/sensor/tagsense_bin/warning/config"]
     assert warn["json_attributes_topic"] == "tagsense/bin/diag/reference/attributes"
     assert all("_attrs" not in p for p in cfgs.values())

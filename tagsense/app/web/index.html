@@ -632,6 +632,12 @@ function detail(id, isRefresh) {
             onchange="saveSetting('poll_interval', this.value)">
           <div class="hint">0 = only when Check now is pressed. Otherwise at least 10.</div>
           <div class="hint" id="s-pace"></div>
+          <label for="s-slow">Slow down when settled (up to ×)</label>
+          <input id="s-slow" type="number" min="1" max="8" step="1" value="${s.slowdown_max}"
+            onchange="saveSetting('slowdown_max', this.value)">
+          <div class="hint">1 = off. Otherwise, after 5 checks in a row that only confirm the state, the
+            interval doubles, up to this many times the poll interval. Anything else, such as a miss while
+            present, goes straight back to the poll interval.</div>
           <label for="s-steps">Rotation steps</label>
           <input id="s-steps" type="number" min="1" max="36" value="${s.rotation_steps}"
             onchange="saveSetting('rotation_steps', this.value)">
@@ -842,7 +848,10 @@ async function updateDetail(o) {
   const s = o.settings, el = document.getElementById("s-enabled"), poll = document.getElementById("s-poll");
   if (document.activeElement !== poll) poll.value = s.poll_interval;
   document.getElementById("s-pace").textContent = o.effective_poll_s
-    ? `Checked every ${o.effective_poll_s} s: ${o.paced_by} on the same camera is checked more often, and objects on one camera are checked together.` : "";
+    ? `Checked every ${o.effective_poll_s} s: ${o.paced_by} on the same camera is checked more often, and objects on one camera are checked together.`
+    : o.current_interval_s ? `Slowed down: checked every ${o.current_interval_s} s for now.` : "";
+  const slow = document.getElementById("s-slow");
+  if (document.activeElement !== slow) slow.value = s.slowdown_max;
   const steps = document.getElementById("s-steps");
   if (document.activeElement !== steps) steps.value = s.rotation_steps;
   const moved = document.getElementById("s-moved");

@@ -329,3 +329,19 @@ def test_set_home_needs_a_hit(tmp_path):
     run_once(cam)
     assert not r.set_home()
     assert client.last("tagsense/recycling/home_distance/available") == "offline"
+
+
+def test_slowdown_only_on_checks_that_confirm_the_state(tmp_path):
+    from app.scheduler import POLL, STEADY_CHECKS
+    cam, src, client, objs = setup(tmp_path, tags=(("bin", 5),))
+    b = objs["bin"]
+    b.on_setting("slowdown_max", "4")
+    b.on_check_now()
+    run_once(cam)                                        # manual: absent -> present, not steady
+    assert b.sched.factor == 1
+    for _ in range(STEADY_CHECKS):
+        b.process(POLL, cam.fetch_burst([b]))           # present and seen: steady
+    assert b.sched.factor == 2 and b.status()["current_interval_s"] == 120
+    src.jpeg = cv2.imencode(".jpg", np.zeros((1080, 1920, 3), np.uint8) + 128)[1].tobytes()
+    b.process(POLL, cam.fetch_burst([b]))               # a miss while present: back to 60 s
+    assert b.sched.factor == 1 and b.status()["current_interval_s"] is None

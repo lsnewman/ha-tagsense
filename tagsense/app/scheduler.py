@@ -9,6 +9,13 @@ streak still short of absent_checks, schedules a confirm check confirm_delay_s
 later. The chain stops on a hit, an inconclusive or failed check, reaching
 absent, or being disabled. A manual press restarts it. Polls and the startup
 check never start a chain, and nor do shared checks.
+
+Slowing down (optional, slowdown_max > 1): after STEADY_CHECKS poll or shared
+checks in a row that only confirm the state (a hit while present, a miss while
+absent), the interval doubles, up to slowdown_max times the set interval.
+Anything else (a miss while present, a state change, a manual or confirm
+check, an inconclusive or failed check, a settings change) drops straight
+back to the set interval.
 """
 from __future__ import annotations
 
@@ -17,18 +24,30 @@ from .decision import MISS
 STARTUP, POLL, MANUAL, CONFIRM = "startup", "poll", "manual", "confirm"
 SHARED = "shared"   # another object on the same camera triggered the burst
 _PRIORITY = {MANUAL: 0, STARTUP: 1, CONFIRM: 2, POLL: 3}
+STEADY_CHECKS = 5
 
 
 class Scheduler:
     def __init__(self, now: float, poll_interval: float = 60.0,
-                 confirm_delay_s: float = 45.0, enabled: bool = True):
-        self.poll_interval = poll_interval
+                 confirm_delay_s: float = 45.0, enabled: bool = True, slowdown_max: int = 1):
+        self.base_interval = poll_interval
+        self.slowdown_max = slowdown_max
+        self.factor = 1             # current slow-down
+        self.steady = 0             # steady checks since the last change of pace
         self.confirm_delay_s = confirm_delay_s
         self.enabled = enabled
         self._pending: set[str] = set()
         self.confirm_at: float | None = None
         self.next_poll: float | None = None
         self._schedule_poll(now)
+
+    @property
+    def poll_interval(self) -> float:
+        """The interval in use now: the set one, times any slow-down."""
+        return self.base_interval * self.factor
+
+    def _reset_pace(self):
+        self.factor, self.steady = 1, 0
 
     def _schedule_poll(self, now: float):
         self.next_poll = now + self.poll_interval if self.enabled and self.poll_interval > 0 else None
@@ -48,7 +67,13 @@ class Scheduler:
         self._schedule_poll(now)
 
     def set_poll_interval(self, seconds: float, now: float):
-        self.poll_interval = seconds
+        self.base_interval = seconds
+        self._reset_pace()
+        self._schedule_poll(now)
+
+    def set_slowdown(self, slowdown_max: int, now: float):
+        self.slowdown_max = slowdown_max
+        self._reset_pace()
         self._schedule_poll(now)
 
     def due(self, now: float) -> str | None:
@@ -77,8 +102,15 @@ class Scheduler:
         return max(0.0, min(times) - now) if times else None
 
     def on_result(self, trigger: str, outcome: str, miss_streak: int,
-                  absent_checks: int, now: float):
-        """Called after each check completes."""
+                  absent_checks: int, now: float, steady: bool = False):
+        """Called after each check completes. `steady`: it only confirmed the state."""
+        if steady and self.slowdown_max > 1 and trigger in (POLL, SHARED):
+            self.steady += 1
+            if self.steady >= STEADY_CHECKS:
+                self.steady = 0
+                self.factor = min(self.factor * 2, self.slowdown_max)
+        else:
+            self._reset_pace()
         self._schedule_poll(now)        # any check resets the poll timer
         if outcome != MISS or miss_streak >= absent_checks:
             self.confirm_at = None
