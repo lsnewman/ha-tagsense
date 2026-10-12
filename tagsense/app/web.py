@@ -723,7 +723,7 @@ def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
                 if name in ("access_image", "access_frame"):
                     return self._send(200, getattr(api, name)(kw["sid"]), "image/jpeg")
                 if name == "debug_bundle":
-                    body = hl.debug_bundle(api.app)
+                    body = hl.debug_bundle(api.app, images=(query.get("images") or ["1"])[0] == "1")
                     self._attachment(f"tagsense-debug-{time.strftime('%Y%m%d-%H%M%S')}.zip")
                     return self._send(200, body, "application/zip")
                 if name == "access_debug":

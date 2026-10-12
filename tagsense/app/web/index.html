@@ -441,15 +441,22 @@ async function healthPage(isRefresh) {
         <td>${esc(sc.last_error || "none")}</td></tr>`).join("")}</table></div>` : ""}`;
   if (isRefresh && document.getElementById("health-dyn")) { document.getElementById("health-dyn").innerHTML = body; return; }
   $main.innerHTML = `<div class="toolbar"><h2>Health</h2>
-      <a class="btn" href="api/debug-bundle.zip">Download debug bundle</a></div>
+      <label class="inline small" style="margin:0 8px 0 0"><input type="checkbox" id="bundle-images" checked>&nbsp;Include images</label>
+      <button onclick="downloadBundle()">Download debug bundle</button></div>
     <div class="stack"><div id="health-dyn" class="stack">${body}</div>
     <div class="card"><div class="row"><h3 style="flex:1;margin:0">Recent log</h3>
       <button class="small" onclick="loadLog()">Refresh</button></div>
       <textarea id="health-log" readonly style="min-height:260px;margin-top:8px"></textarea>
-      <div class="hint">The debug bundle has this log, settings and versions, each object's status, last 24 hours of
-        checks and latest search-area images, and the scanners' settings and recent events. It never contains passwords,
-        tokens, keys, passes or codes.</div></div></div>`;
+      <div class="hint">The debug bundle has this log, settings and versions, each object's status and last 24 hours of
+        checks, and the scanners' settings and recent events; with <b>Include images</b>, also each object's latest
+        search-area images. It never contains passwords, tokens, keys, passes or codes.</div></div></div>`;
   loadLog();
+}
+function downloadBundle() {
+  const images = document.getElementById("bundle-images").checked;
+  if (images && !confirm("The bundle will include each object's latest search-area images. They show part of your " +
+      "camera's view, so look at them before sharing the bundle with anyone.\n\nDownload with images?")) return;
+  location.href = `api/debug-bundle.zip?images=${images ? 1 : 0}`;
 }
 async function loadLog() {
   const t = document.getElementById("health-log");

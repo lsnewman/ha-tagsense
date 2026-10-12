@@ -155,10 +155,11 @@ def versions() -> dict:
     return out
 
 
-def debug_bundle(app) -> bytes:
+def debug_bundle(app, images: bool = True) -> bytes:
     """A zip for a bug report. Contains no secrets (see the module docstring).
-    The latest annotated search-area images are included: they are what a report
-    about a missed or phantom tag needs most."""
+    `images` adds each object's latest annotated search-area images: what a report
+    about a missed or phantom tag needs most, but they show part of the camera's
+    view, so the panel asks first."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -174,7 +175,7 @@ def debug_bundle(app) -> bytes:
             z.writestr(f"objects/{o.oc.id}/checks_24h.jsonl",
                        "".join(json.dumps(redact(p)) + "\n" for p in o.checklog.points()))
             for name, jpeg in (("last", o.last_jpeg), ("phantom", o.last_phantom_jpeg)):
-                if jpeg:
+                if jpeg and images:
                     z.writestr(f"objects/{o.oc.id}/{name}.jpg", jpeg)
         if app.access is not None:
             put("access/scanners.json", app.access.status())     # settings and events, no codes

@@ -26,8 +26,9 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   change or Check now goes straight back to the poll interval.
 - **Health page:** each camera now shows its average fetch time and how
   many of its last 50 fetches succeeded.
-- **Debug bundle:** now also has the object list, software versions and
-  each object's latest search-area images.
+- **Debug bundle:** now also has the object list and software versions, and
+  optionally (on by default, confirmed before downloading) each object's
+  latest search-area images.
 
 ## 0.5.1
 

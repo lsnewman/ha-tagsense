@@ -71,6 +71,8 @@ def test_debug_bundle_contents(app):   # noqa: F811
     assert {"objects.json", "objects/bin/last.jpg", "objects/bin/status.json"} <= set(names)
     assert z.read("objects/bin/last.jpg")[:2] == b"\xff\xd8"
     assert json.loads(z.read("objects.json"))[0]["tag_id"] == 5
+    plain = zipfile.ZipFile(io.BytesIO(debug_bundle(app, images=False))).namelist()
+    assert not [n for n in plain if n.endswith(".jpg")] and "objects.json" in plain
     v = json.loads(z.read("info.json"))["versions"]
     assert v["python"] and v["opencv"]
 

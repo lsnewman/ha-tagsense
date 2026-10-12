@@ -19,11 +19,12 @@ tab counts anything that needs a look.
 - **Recent log.**
 
 **Download debug bundle** gives a zip to attach to a bug report: the log,
-settings and software versions, each object's status, last 24 hours of checks
-and latest search-area images (the *Last crop* image, and the last one with a
-discarded read), and the scanners' settings and recent events. The images show
-only each object's search area; look at them before sharing the bundle if that
-area shows anything private. **Passwords, tokens and keys are hidden, and nothing
+settings and software versions, each object's status and last 24 hours of
+checks, and the scanners' settings and recent events. **Include images** (on
+by default) also adds each object's latest search-area images (the *Last crop*
+image, and the last one with a discarded read). They show part of the camera's
+view, so the panel asks you to confirm first; look at them before sharing the
+bundle. **Passwords, tokens and keys are hidden, and nothing
 from the Access code store (keys, passes, codes) is included.**
 
 ## Common problems
