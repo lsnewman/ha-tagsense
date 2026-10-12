@@ -137,6 +137,11 @@ class Api:
             raise ApiError(409, "the object is not present: nothing to take 0° from")
         return {"set_orientation": oid}
 
+    def set_home(self, oid: str) -> dict:
+        if not self._obj(oid).set_home():
+            raise ApiError(409, "the object is not present: nothing to take home from")
+        return {"set_home": oid}
+
     def history(self, oid: str) -> list:
         return self._obj(oid).history_list()
 
@@ -552,6 +557,7 @@ ROUTES = [
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/check", "check"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/reset_reference", "reset_reference"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/set_orientation", "set_orientation"),
+    ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/set_home", "set_home"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/history", "history"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/chart", "chart"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/entities", "entities"),
@@ -596,7 +602,7 @@ ROUTES = [
 # The only routes a signed-in non-admin may use (the page itself, "/", has no data).
 # Every other route is admin-only: a new route is admin-only unless added here.
 NON_ADMIN_ROUTES = ("whoami", "pass_info", "pass_png")
-NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_test", "access_clear_lockout",
+NO_BODY = ("check", "reset_reference", "set_orientation", "set_home", "access_scan", "access_test", "access_clear_lockout",
            "access_person_reenrol", "access_static_revoke", "access_static_revoke_all",
            "access_rotate_key", "access_confirm_rotate")
 

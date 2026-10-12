@@ -10,6 +10,7 @@ from .rotation import DEFAULT_STEPS, clamp_steps
 
 MIN_POLL_S = 10
 MAX_POLL_S = 86400
+MAX_MOVED = 50.0     # tag widths
 
 
 def clamp_poll(v) -> int:
@@ -28,6 +29,7 @@ class Settings:
     crop_y2: float = DEFAULT_CROP[3]
     enabled: bool = True
     rotation_steps: int = DEFAULT_STEPS
+    moved_threshold: float = 3.0     # tag widths from home; 0 = Moved off
 
     @property
     def crop(self):
@@ -45,6 +47,8 @@ class Settings:
                 new = str(value).strip().upper() in ("ON", "TRUE", "1")
             elif key == "rotation_steps":
                 new = clamp_steps(value)
+            elif key == "moved_threshold":
+                new = round(min(MAX_MOVED, max(0.0, float(value))), 1)
             else:
                 new = round(min(1.0, max(0.0, float(value))), 4)
         except (TypeError, ValueError, OverflowError):

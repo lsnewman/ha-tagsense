@@ -14,6 +14,12 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
 - **Poll interval explained:** objects on one camera are checked together,
   so the shortest interval among them sets the pace. An object's page now
   says when another object is setting it.
+- **Distance from home and Moved:** each object now has a fixed home
+  position, set automatically once its position has been learned (10 hits)
+  or with **Set current position as home**. A **Distance from home** sensor
+  (in tag widths) and a **Moved** binary sensor, on past the per-object
+  **Moved threshold** (default 3), show when the object is somewhere other
+  than home. Reset learned position also resets home.
 
 ## 0.5.1
 

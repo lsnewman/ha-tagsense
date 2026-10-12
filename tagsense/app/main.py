@@ -239,6 +239,8 @@ class App:
             o.reset_reference()
         elif cmd == "set_orientation":
             o.set_orientation()
+        elif cmd == "set_home":
+            o.set_home()
 
     # --- lifecycle --------------------------------------------------------
 

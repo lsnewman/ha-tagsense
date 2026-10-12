@@ -9,7 +9,7 @@
   --bg: #f5f6f8; --card: #ffffff; --text: #1c1f23; --muted: #66707a; --line: #dde1e6;
   --accent: #0b74c4; --accent-text: #ffffff; --ok: #2e7d32; --warn: #b26a00; --bad: #c62828;
   --chip-present: #e3f3e4; --chip-absent: #eceff1; --chip-unknown: #fff1d6;
-  --crop: #ffb300; --usual: #00b8d4; --quad: #43a047; --others: #e8eaed;
+  --crop: #ffb300; --usual: #00b8d4; --quad: #43a047; --others: #e8eaed; --home: #e040fb;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -618,6 +618,7 @@ function detail(id, isRefresh) {
           `<span><i style="background:var(--quad)"></i>last detection</span>
           <span id="legend-others" style="display:none"><i style="border:2px dashed var(--muted);box-sizing:border-box"></i>other objects on this camera</span>
           <span><i style="background:var(--usual)"></i>usual position (learned)</span>
+          <span><i style="border:2px solid var(--home);border-radius:50%;box-sizing:border-box"></i>home</span>
           <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>`)}
       </div>
 
@@ -637,6 +638,12 @@ function detail(id, isRefresh) {
           <div class="hint">4 = 0/90/180/270°, 8 = 45° steps, 1 = always 0 (off).
             The tag must stay visible in every orientation, e.g. on the lid.</div>
           <div class="row" style="margin-top:8px"><button id="s-zero" onclick="setOrientation('${id}')">Set current orientation as 0°</button></div>
+          <label for="s-moved">Moved threshold (tag widths)</label>
+          <input id="s-moved" type="number" min="0" max="50" step="0.5" value="${s.moved_threshold}"
+            onchange="saveSetting('moved_threshold', this.value)">
+          <div class="hint">Moved turns on when the tag is further than this from its home, and off again
+            below 80% of it. 0 = off.</div>
+          <div class="row" style="margin-top:8px"><button id="s-home" onclick="setHome('${id}')">Set current position as home</button></div>
           <div class="error" id="s-error"></div></div>
       </div>
     </div>
@@ -740,6 +747,14 @@ triggers:
     for:
       minutes: 5
 ${notify(n + " is back but turned {{ states('" + e.rotation + "') }}°.")}`]);
+  if (o.settings.moved_threshold > 0) ex.push(["Moved from its home", `alias: ${q(n + ": moved from home")}
+triggers:
+  - trigger: state
+    entity_id: ${e.moved}
+    to: "on"
+    for:
+      minutes: 5
+${notify(n + " is {{ states('" + e.home_distance + "') }} tag widths from its home.")}`]);
   ex.push(["Check straight away when something happens", `alias: ${q(n + ": check when something happens")}
 triggers:
   - trigger: state
@@ -805,6 +820,7 @@ async function updateDetail(o) {
       <tr><td>Tag size</td><td>${fmtNum(d.tag_size_px)} px</td></tr>
       <tr><td>Tag aspect</td><td>${fmtNum(d.tag_aspect, 2)} <span class="muted">(limit ${state.max_aspect ? state.max_aspect : "off"})</span></td></tr>
       <tr><td>Rotation</td><td>${rotText(o)}</td></tr>
+      <tr><td>From home</td><td>${homeText(o)}</td></tr>
       <tr><td>Miss streak</td><td>${o.miss_streak}</td></tr></table>`;
   document.getElementById("d-diag").innerHTML = `<table class="kv">
     <tr><td>Source</td><td>${esc(d.last_source || "–")} ${esc(d.resolution || "")}</td></tr>
@@ -829,6 +845,11 @@ async function updateDetail(o) {
     ? `Checked every ${o.effective_poll_s} s: ${o.paced_by} on the same camera is checked more often, and objects on one camera are checked together.` : "";
   const steps = document.getElementById("s-steps");
   if (document.activeElement !== steps) steps.value = s.rotation_steps;
+  const moved = document.getElementById("s-moved");
+  if (document.activeElement !== moved) moved.value = s.moved_threshold;
+  const home = document.getElementById("s-home");
+  home.disabled = o.state !== "present" || !o.last_corners;
+  home.title = home.disabled ? "Only while the object is present" : "Make where the tag is now its home";
   const zero = document.getElementById("s-zero");
   zero.disabled = o.state !== "present" || !o.last_corners;
   zero.title = zero.disabled ? "Only while the object is present" : "Make the tag's current turn the 0° position";
@@ -851,6 +872,12 @@ async function updateDetail(o) {
   }
 }
 
+function homeText(o) {
+  if (!o.reference.home) return `– <span class="muted">(home is set after ${o.reference.min_hits} hits)</span>`;
+  if (o.home_distance === null || o.home_distance === undefined) return `– <span class="muted">(not present)</span>`;
+  return `${o.home_distance.toFixed(1)} tag widths${o.moved ? ` · <b style="color:var(--warn)">moved</b>` : ""}`;
+}
+
 function rotText(o) {
   const r = o.rotation || {};
   if (r.value === null || r.value === undefined) return `– <span class="muted">(${o.state === "present" ? "no hit yet" : "not present"})</span>`;
@@ -864,11 +891,18 @@ async function setOrientation(id) {
   catch (e) { alert(e.message); }
 }
 
+async function setHome(id) {
+  const o = objById(id);
+  if (!confirm(`Make where ${o ? o.name : id} is now its home position?`)) return;
+  try { await api(`objects/${id}/set_home`, { method: "POST" }); refresh(); }
+  catch (e) { alert(e.message); }
+}
+
 async function resetReference(id) {
   const o = objById(id);
   if (!confirm(`Reset the learned position of ${o ? o.name : id}?\n\nUse this after moving the object, e.g. further from the camera. ` +
                `The size gate and position warnings stay off until ${o ? o.reference.min_hits : 10} new hits have been learned. ` +
-               `The 0° rotation is also forgotten and set again from the next hit.`)) return;
+               `The 0° rotation and the home position are also forgotten and set again from new hits.`)) return;
   try { await api(`objects/${id}/reset_reference`, { method: "POST" }); refresh(); }
   catch (e) { alert(e.message); }
 }
@@ -1132,6 +1166,14 @@ function drawOverlay(o) {
   const zero = o.rotation && o.rotation.zero_corners;     // on top of the crosshair
   if (zero) out += tagArrow(zero, "var(--usual)", true);
   if (o.last_corners) out += tagArrow(o.last_corners, "var(--quad)", false);
+  const home = o.reference && o.reference.home;
+  if (home) {                                 // a circle in pixel space
+    const img = document.getElementById("frame");
+    const k = img && img.naturalWidth ? img.naturalHeight / img.naturalWidth : 9 / 16;
+    const r = Math.max((o.reference.size || 0.04) * 0.6, 0.015);
+    out += `<ellipse cx="${home[0]}" cy="${home[1]}" rx="${r * k}" ry="${r}" fill="none" stroke="var(--home)"
+      vector-effect="non-scaling-stroke" style="stroke-width:2px"/>`;
+  }
   svg.innerHTML = out;
 }
 

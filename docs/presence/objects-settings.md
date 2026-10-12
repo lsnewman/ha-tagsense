@@ -22,6 +22,7 @@ Set on the object's page:
 | **Enabled** | on | Off pauses all checks; the main sensor goes unavailable. |
 | **Poll interval** | 60 s | How often a check runs on its own. `0` = only when *Check now* is pressed; otherwise at least 10. Objects on one camera are checked together, from the same frames, so the shortest interval among them sets the pace for all; the object's page says so when another object is setting it. |
 | **Rotation steps** | 4 | See [Rotation](rotation.md). |
+| **Moved threshold** | 3 tag widths | How far from its home the tag must be for *Moved* to turn on; `0` = off. Home is set from the learned position after 10 hits, shown as a circle on the search area, and changed with **Set current position as home** (only while present). It does not follow the object, so *Distance from home* stays high for as long as the object is somewhere else. |
 
 Objects on the same stream share one camera worker: each burst is fetched once
 and judged by all of them. Different cameras are checked in parallel. The other

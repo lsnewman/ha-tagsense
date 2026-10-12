@@ -114,6 +114,11 @@ class TrackedObject:
         # (kept while the object is away; its entities are unavailable then).
         self.rotation: float | None = None
         self.rotation_angle: float | None = None
+        # Distance from home (tag widths) while present, Moved past the threshold,
+        # and the last hit's (size, cx, cy) for "Set home here".
+        self.home_distance: float | None = None
+        self.moved = False
+        self.last_measure: tuple[float, float, float] | None = None
         self.snapshots = Snapshots(os.path.join(d, "snapshots"))
         self.checklog = CheckLog(os.path.join(d, "checks.jsonl"))
         # Rejection alert: reasons from the latest check with rejected target reads,
@@ -134,7 +139,7 @@ class TrackedObject:
         s = self.settings
         return {"poll_interval": s.poll_interval, "crop_x1": s.crop_x1, "crop_y1": s.crop_y1,
                 "crop_x2": s.crop_x2, "crop_y2": s.crop_y2, "enabled": s.enabled,
-                "rotation_steps": s.rotation_steps}
+                "rotation_steps": s.rotation_steps, "moved_threshold": s.moved_threshold}
 
     def on_setting(self, key: str, value: str, from_api: bool = False):
         with self.cond:
@@ -151,6 +156,9 @@ class TrackedObject:
                 elif key == "rotation_steps" and self.rotation_angle is not None:
                     self.rotation = snap(self.rotation_angle, self.settings.rotation_steps)
                     self._publish_rotation_locked()
+                elif key == "moved_threshold":
+                    self._update_moved_locked()
+                    self._publish_home_locked()
                 self.cond.notify_all()
             stored = getattr(self.settings, key)
         # Echo the stored (possibly clamped) value. Overwrite the retained command
@@ -176,6 +184,7 @@ class TrackedObject:
             self.reference = Reference(updated=time.time())   # also forgets 0 deg
             self.reference.save(self.reference_path)
             self.rotation = self.rotation_angle = None
+            self.home_distance, self.moved = None, False        # home goes too
             self.decision.reject_streak = 0
             self.decision.save(self.state_path)
             self._publish_state_locked()
@@ -194,6 +203,21 @@ class TrackedObject:
             self.rotation, self.rotation_angle = 0.0, 0.0
             self._publish_rotation_locked()
         log.info("[%s] current orientation set as 0°", self.id)
+        return True
+
+    def set_home(self) -> bool:
+        """Make the tag's current position home. False if there is no hit to use."""
+        with self.cond:
+            present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
+            if self.last_measure is None or not present:
+                log.warning("[%s] set home: the object is not present", self.id)
+                return False
+            self.reference.set_home(*self.last_measure)
+            self.reference.save(self.reference_path)
+            self.home_distance = 0.0
+            self._update_moved_locked()
+            self._publish_home_locked()
+        log.info("[%s] current position set as home", self.id)
         return True
 
     def request(self, trigger: str):
@@ -219,6 +243,26 @@ class TrackedObject:
                                 "last_seen": iso(self.decision.last_seen_ts)})
         self.pub.publish_problem(self._alert_locked())
         self._publish_rotation_locked()
+        self._publish_home_locked()
+
+    def _update_moved_locked(self):
+        """Moved past the threshold; off again below 80% of it, so a tag sitting
+        near the threshold does not flap."""
+        t, d = self.settings.moved_threshold, self.home_distance
+        if not t or d is None:
+            self.moved = False
+        elif d > t:
+            self.moved = True
+        elif d <= 0.8 * t:
+            self.moved = False
+
+    def _publish_home_locked(self):
+        present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
+        home = self.reference.home
+        self.pub.publish_home(present and home is not None and self.home_distance is not None,
+                              self.home_distance, self.moved,
+                              {"home": [round(v, 3) for v in home] if home else None,
+                               "threshold": self.settings.moved_threshold})
 
     def _publish_rotation_locked(self):
         present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
@@ -340,12 +384,17 @@ class TrackedObject:
         warnings = []
         if validate_crop(raw_crop) != tuple(raw_crop):
             warnings.append(f"crop {raw_crop} invalid, using {crop}")
-        angle = None
+        angle = dist = None
         if best:
             if gw := self.reference.warning(best.det):     # compare before learning
                 warnings.append(gw)
                 log.warning("[%s] geometry: %s", self.id, gw)
+            dist = self.reference.distance(best.det)       # also before learning
+            had_home = self.reference.home is not None
             self.reference.learn(best.det)
+            self.last_measure = Reference._measure(best.det)
+            if not had_home and self.reference.home is not None:
+                log.info("[%s] home set from the learned position", self.id)
             if self.reference.orient is None:
                 self.reference.set_orient(_norm(best.det.corners, best.det.frame_wh))
                 log.info("[%s] rotation 0° set from the first hit", self.id)
@@ -387,6 +436,16 @@ class TrackedObject:
                 self.rotation_angle = angle
                 self.rotation = snap(angle, self.settings.rotation_steps, self.rotation)
             rotated = prev_rotation is not None and self.rotation != prev_rotation
+            if self.decision.reported(self.cfg, self.settings.enabled)[0] != dec.PRESENT:
+                self.home_distance = None
+            elif dist is not None:
+                self.home_distance = dist
+            was_moved = self.moved
+            self._update_moved_locked()
+            moved = self.moved and not was_moved
+            if self.moved != was_moved:
+                log.info("[%s] moved %s (%s tag widths from home)", self.id,
+                         "on" if self.moved else "off", self.home_distance)
             if rotated:
                 log.info("[%s] rotation %s° -> %s° (exact %.1f°)", self.id, fmt_deg(prev_rotation),
                          fmt_deg(self.rotation), angle)
@@ -442,6 +501,7 @@ class TrackedObject:
                 "aspect": round(aspect, 2) if aspect else None,
                 "rotation": fmt_deg(self.rotation) if angle is not None else None,
                 "angle": round(angle, 1) if angle is not None else None,
+                "home_distance": dist,
                 "warning": self.last_diag["warning"],
                 "phantoms": [p.describe() for p in phantoms]})
             crop_std = self.last_diag["crop_std"]
@@ -463,6 +523,9 @@ class TrackedObject:
         if rotated:
             self.snapshots.add(iso(now), now, f"{fmt_deg(prev_rotation)}°", f"{fmt_deg(self.rotation)}°",
                                f"rotated (exact {angle:.1f}°)", jpeg)
+        if moved:
+            self.snapshots.add(iso(now), now, "home", "moved",
+                               f"moved {self.home_distance} tag widths from home", jpeg)
         self._sync_alert()
         log.info("[%s] check %s: %d/%d valid, %d hits, %d fetch failures -> %s; reported %s (%s), "
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
@@ -529,6 +592,7 @@ class TrackedObject:
                    "min_hits": MIN_HITS},
                 "alert": self._alert_locked(),
                 "rotation": self.rotation_status(),
+                "home_distance": self.home_distance, "moved": self.moved,
                 "last_corners": self.last_corners,
                 "diag": self.last_diag,
                 "last_phantom": self.last_phantom,

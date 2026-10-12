@@ -24,6 +24,8 @@ CACHE_S = 60.0
 ENTITIES = {
     "presence": ("binary_sensor", None),
     "rotation": ("sensor", "Rotation"),
+    "home_distance": ("sensor", "Distance from home"),
+    "moved": ("binary_sensor", "Moved"),
     "check_now": ("button", "Check now"),
     "problem": ("binary_sensor", "Tag rejected"),
     "enabled": ("switch", "Enabled"),

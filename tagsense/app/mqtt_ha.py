@@ -23,7 +23,7 @@ SUPPORT_URL = "https://github.com/lsnewman/ha-tagsense"
 ENUM_PRESENT, ENUM_ABSENT, ENUM_UNKNOWN = "present", "absent", "unknown"
 
 SETTING_KEYS = ("poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2", "enabled",
-                "rotation_steps")
+                "rotation_steps", "moved_threshold")
 
 # (key, name, extra discovery fields); "{attrs}" is replaced by an attributes topic
 DIAGNOSTICS = [
@@ -53,7 +53,7 @@ DIAGNOSTICS = [
 ]
 # Removed entities: their discovery config is cleared so HA deletes them.
 RETIRED_DIAGNOSTICS = ("last_check",)
-COMMANDS = ("check_now", "reset_reference", "set_orientation")
+COMMANDS = ("check_now", "reset_reference", "set_orientation", "set_home")
 DIAG_ATTRS = ("reference", "phantoms", "crop_stats")
 
 
@@ -112,6 +112,10 @@ class Topics:
         self.rotation = f"{b}/rotation"
         self.rotation_attrs = f"{b}/rotation/attributes"
         self.rotation_available = f"{b}/rotation/available"
+        self.home_distance = f"{b}/home_distance"
+        self.home_attrs = f"{b}/home_distance/attributes"
+        self.moved = f"{b}/moved"
+        self.home_available = f"{b}/home_distance/available"
 
     def cmd(self, name: str) -> str:
         return f"{self.base}/cmd/{name}"
@@ -140,6 +144,9 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
     # Rotation entities only make sense while the object is there.
     rot_avail = {"availability": app_avail + [{"topic": t.rotation_available}],
                  "availability_mode": "all"}
+    # Distance from home and Moved: only while present and once home is known.
+    home_avail = {"availability": app_avail + [{"topic": t.home_available}],
+                  "availability_mode": "all"}
 
     def cfg(component: str, key: str, payload: dict) -> tuple[str, dict]:
         p = {"unique_id": f"tagsense_{obj_id}_{key}", "device": device, "origin": origin,
@@ -178,6 +185,23 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
         cfg("button", "set_orientation", {
             "name": "Set current orientation as 0°", "entity_category": "config",
             "command_topic": t.cmd("set_orientation"), "icon": "mdi:rotate-left", **rot_avail}),
+        cfg("sensor", "home_distance", {
+            "name": "Distance from home", "unit_of_measurement": "tag widths",
+            "state_class": "measurement", "suggested_display_precision": 1,
+            "icon": "mdi:map-marker-distance", "state_topic": t.home_distance,
+            "json_attributes_topic": t.home_attrs, **home_avail}),
+        cfg("binary_sensor", "moved", {
+            "name": "Moved", "icon": "mdi:map-marker-alert-outline", "state_topic": t.moved,
+            "json_attributes_topic": t.home_attrs, **home_avail}),
+        cfg("number", "moved_threshold", {
+            "name": "Moved threshold", "entity_category": "config", "mode": "box",
+            "min": 0, "max": 50, "step": 0.5, "unit_of_measurement": "tag widths",
+            "icon": "mdi:map-marker-radius-outline",
+            "command_topic": t.set("moved_threshold"), "state_topic": t.setting("moved_threshold"),
+            "retain": True}),
+        cfg("button", "set_home", {
+            "name": "Set home position", "entity_category": "config",
+            "command_topic": t.cmd("set_home"), "icon": "mdi:home-map-marker", **rot_avail}),
         cfg("switch", "enabled", {
             "name": "Enabled", "entity_category": "config",
             "command_topic": t.set("enabled"), "state_topic": t.setting("enabled"),
@@ -261,6 +285,13 @@ class ObjectPublisher:
             self.pub(self.t.rotation, fmt(value))
         self.pub(self.t.rotation_available, ONLINE if available else OFFLINE)
 
+    def publish_home(self, available: bool, distance: float | None, moved: bool, attrs: dict):
+        if available:
+            self.pub(self.t.home_attrs, json.dumps(attrs))
+            self.pub(self.t.home_distance, fmt(distance))
+            self.pub(self.t.moved, "ON" if moved else "OFF")
+        self.pub(self.t.home_available, ONLINE if available else OFFLINE)
+
     def publish_image(self, jpeg: bytes):
         self.pub(self.t.image, jpeg, retain=False)
 
@@ -269,7 +300,8 @@ class ObjectPublisher:
         t = self.t
         topics = [topic for topic, _ in discovery_configs(self.client.version, self.id, self.name)]
         topics += [t.presence, t.presence_attrs, t.presence_available, t.status, t.status_attrs,
-                   t.problem, t.problem_attrs, t.rotation, t.rotation_attrs, t.rotation_available]
+                   t.problem, t.problem_attrs, t.rotation, t.rotation_attrs, t.rotation_available,
+                   t.home_distance, t.home_attrs, t.moved, t.home_available]
         topics += [t.cmd(c) for c in COMMANDS] + self._retired_topics()
         topics += [t.setting(k) for k in SETTING_KEYS] + [t.set(k) for k in SETTING_KEYS]
         topics += [t.diag(k) for k, _, _ in DIAGNOSTICS]
