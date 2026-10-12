@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import threading
 import time
@@ -109,7 +110,7 @@ def health(app) -> dict:
         cameras.append({"name": cam.name, "objects": [o.oc.name for o in cam.objects],
                         "last_frame_age_s": ago_s(cam.last_frame_at),
                         "fetch_failures_total": cam.fetch_failures_total,
-                        "last_error": cam.last_error})
+                        "last_error": cam.last_error, **cam.fetch_stats()})
     for o in list(app.objects.values()):
         st = o.status()
         d = st.get("diag") or {}
@@ -141,21 +142,40 @@ def health(app) -> dict:
 
 # --- the bundle ----------------------------------------------------------------------
 
+def versions() -> dict:
+    import cv2
+    import numpy
+    out = {"python": platform.python_version(), "opencv": cv2.__version__, "numpy": numpy.__version__,
+           "machine": platform.machine()}
+    try:
+        import zxingcpp
+        out["zxing_cpp"] = getattr(zxingcpp, "__version__", "?")
+    except ImportError:
+        pass
+    return out
+
+
 def debug_bundle(app) -> bytes:
-    """A zip for a bug report. Contains no secrets (see the module docstring)."""
+    """A zip for a bug report. Contains no secrets (see the module docstring).
+    The latest annotated search-area images are included: they are what a report
+    about a missed or phantom tag needs most."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         def put(name, obj):
             z.writestr(name, json.dumps(redact(obj), indent=1, default=str))
         put("info.json", {"created": now, "version": os.environ.get("TAGSENSE_VERSION", "dev"),
-                          "options": app.opts, "globals": app.globals})
+                          "options": app.opts, "globals": app.globals, "versions": versions()})
+        put("objects.json", [o.oc.to_dict() for o in list(app.objects.values())])
         put("health.json", health(app))
         for o in list(app.objects.values()):
             put(f"objects/{o.oc.id}/status.json", o.status())
             put(f"objects/{o.oc.id}/recent_checks.json", o.history_list())
             z.writestr(f"objects/{o.oc.id}/checks_24h.jsonl",
-                       "".join(json.dumps(p) + "\n" for p in o.checklog.points()))
+                       "".join(json.dumps(redact(p)) + "\n" for p in o.checklog.points()))
+            for name, jpeg in (("last", o.last_jpeg), ("phantom", o.last_phantom_jpeg)):
+                if jpeg:
+                    z.writestr(f"objects/{o.oc.id}/{name}.jpg", jpeg)
         if app.access is not None:
             put("access/scanners.json", app.access.status())     # settings and events, no codes
             codes = app.access.codes

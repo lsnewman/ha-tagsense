@@ -24,6 +24,10 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   default). After 5 checks in a row that only confirm the state, the poll
   interval doubles, up to the chosen limit; a miss while present, a state
   change or Check now goes straight back to the poll interval.
+- **Health page:** each camera now shows its average fetch time and how
+  many of its last 50 fetches succeeded.
+- **Debug bundle:** now also has the object list, software versions and
+  each object's latest search-area images.
 
 ## 0.5.1
 

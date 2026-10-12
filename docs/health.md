@@ -10,15 +10,20 @@ tab counts anything that needs a look.
   frames, Access not started, a locked-out scanner.
 - **Connections:** MQTT for Presence and Access, go2rtc, and whether TagSense
   can read Home Assistant's users and entity IDs.
-- **Cameras:** each camera's objects, last frame, fetch failures and last error.
+- **Cameras:** each camera's objects, last frame, average fetch time and how
+  many fetches succeeded (both over the last 50 fetches), total fetch failures
+  and last error.
 - **Objects, last 24 hours:** state, checks, failed checks, frames discarded,
   state changes, fetch time and resolution.
 - **Access scanners:** last scan, last event, lockout, last error.
 - **Recent log.**
 
 **Download debug bundle** gives a zip to attach to a bug report: the log,
-settings, each object's status and last 24 hours of checks, and the scanners'
-settings and recent events. **Passwords, tokens and keys are hidden, and nothing
+settings and software versions, each object's status, last 24 hours of checks
+and latest search-area images (the *Last crop* image, and the last one with a
+discarded read), and the scanners' settings and recent events. The images show
+only each object's search area; look at them before sharing the bundle if that
+area shows anything private. **Passwords, tokens and keys are hidden, and nothing
 from the Access code store (keys, passes, codes) is included.**
 
 ## Common problems

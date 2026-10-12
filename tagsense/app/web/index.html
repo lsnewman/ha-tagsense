@@ -421,8 +421,11 @@ async function healthPage(isRefresh) {
       <tr><td>Home Assistant entity ids</td><td>${h.entities_error ? `<span class="muted">${esc(h.entities_error)} (defaults are shown)</span>` : "readable"}</td></tr>
     </table></div>
     <div class="card"><h3>Cameras</h3>${h.cameras.length ? `<table class="small">
-      <tr><th>Camera</th><th>Objects</th><th>Last frame</th><th>Fetch failures</th><th>Last error</th></tr>
+      <tr><th>Camera</th><th>Objects</th><th>Last frame</th><th title="Average over the last 50 fetches">Fetch time</th>
+        <th title="Of the last 50 fetches">Fetches OK</th><th>Fetch failures</th><th>Last error</th></tr>
       ${h.cameras.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.objects.join(", "))}</td><td>${secs(c.last_frame_age_s)}</td>
+        <td>${c.fetch_ms_avg != null ? c.fetch_ms_avg + " ms" : "–"}</td>
+        <td>${c.recent_fetches ? `${pct(c.success_pct)} <span class="muted">of ${c.recent_fetches}</span>` : "–"}</td>
         <td>${c.fetch_failures_total}</td><td>${esc(c.last_error || "none")}</td></tr>`).join("")}</table>`
       : `<div class="muted small">No objects yet.</div>`}</div>
     <div class="card"><h3>Objects, last 24 hours</h3>${h.objects.length ? `<table class="small">
@@ -443,8 +446,9 @@ async function healthPage(isRefresh) {
     <div class="card"><div class="row"><h3 style="flex:1;margin:0">Recent log</h3>
       <button class="small" onclick="loadLog()">Refresh</button></div>
       <textarea id="health-log" readonly style="min-height:260px;margin-top:8px"></textarea>
-      <div class="hint">The debug bundle has this log, settings, each object's status and last 24 hours of checks, and the
-        scanners' settings and recent events. It never contains passwords, tokens, keys, passes or codes.</div></div></div>`;
+      <div class="hint">The debug bundle has this log, settings and versions, each object's status, last 24 hours of
+        checks and latest search-area images, and the scanners' settings and recent events. It never contains passwords,
+        tokens, keys, passes or codes.</div></div></div>`;
   loadLog();
 }
 async function loadLog() {
