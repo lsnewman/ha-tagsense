@@ -9,6 +9,11 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   camera, or a mirrored print). Until a tag has been seen once, a check that
   finds nothing also looks for it mirrored, on one frame only, and says
   *found mirrored* on the Last crop image and in Recent checks.
+- **Other objects in the search area editor:** the search areas of other
+  objects on the same camera are drawn as dashed, labelled outlines.
+- **Poll interval explained:** objects on one camera are checked together,
+  so the shortest interval among them sets the pace. An object's page now
+  says when another object is setting it.
 
 ## 0.5.1
 

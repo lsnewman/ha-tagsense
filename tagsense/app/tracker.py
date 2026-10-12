@@ -496,11 +496,28 @@ class TrackedObject:
 
     # --- web UI -----------------------------------------------------------
 
+    def _pace_locked(self) -> dict:
+        """Objects on one camera are checked together, so the fastest poll sets the
+        pace for all of them. Says so when that is another object's interval."""
+        if self.camera is None or not self.settings.enabled:
+            return {}
+        polls = [(o.sched.poll_interval, o.oc.name) for o in self.camera.objects
+                 if o.settings.enabled and o.sched.poll_interval > 0]
+        if not polls:
+            return {}
+        fastest, name = min(polls)
+        own = self.sched.poll_interval
+        if own > 0 and fastest >= own:
+            return {}
+        return {"effective_poll_s": fastest, "paced_by": name}
+
     def status(self) -> dict:
         with self.cond:
             value, reason = self.decision.reported(self.cfg, self.settings.enabled)
             return {
                 **self.oc.to_dict(),
+                "camera": self.camera.name if self.camera else None,
+                **self._pace_locked(),
                 "state": value, "reason": reason,
                 "last_check": iso(self.decision.last_check_ts),
                 "last_seen": iso(self.decision.last_seen_ts),

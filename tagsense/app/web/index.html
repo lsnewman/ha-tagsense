@@ -9,7 +9,7 @@
   --bg: #f5f6f8; --card: #ffffff; --text: #1c1f23; --muted: #66707a; --line: #dde1e6;
   --accent: #0b74c4; --accent-text: #ffffff; --ok: #2e7d32; --warn: #b26a00; --bad: #c62828;
   --chip-present: #e3f3e4; --chip-absent: #eceff1; --chip-unknown: #fff1d6;
-  --crop: #ffb300; --usual: #00b8d4; --quad: #43a047;
+  --crop: #ffb300; --usual: #00b8d4; --quad: #43a047; --others: #e8eaed;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -108,6 +108,10 @@ label.inline { display: inline-flex; align-items: center; margin: 0 16px 0 0; fo
 .editor img { width: 100%; display: block; }
 .editor svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .crop { position: absolute; border: 2px solid var(--crop); cursor: move; }
+.other-crop { position: absolute; border: 2px dashed var(--others); opacity: .75; pointer-events: none; }
+.other-crop.off { opacity: .4; }
+.other-crop span { position: absolute; left: 2px; top: 2px; line-height: 1.2; font-size: 11px; color: #000;
+  background: var(--others); padding: 0 4px; border-radius: 3px; white-space: nowrap; }
 .handle { position: absolute; width: 14px; height: 14px; background: var(--crop); border: 2px solid #000;
   border-radius: 3px; }
 .h-nw { left: -8px; top: -8px; cursor: nwse-resize; } .h-ne { right: -8px; top: -8px; cursor: nesw-resize; }
@@ -612,6 +616,7 @@ function detail(id, isRefresh) {
         ${editorHtml("Search area", "It must cover every spot where the object might be.",
           `<button type="button" id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>`,
           `<span><i style="background:var(--quad)"></i>last detection</span>
+          <span id="legend-others" style="display:none"><i style="border:2px dashed var(--muted);box-sizing:border-box"></i>other objects on this camera</span>
           <span><i style="background:var(--usual)"></i>usual position (learned)</span>
           <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>`)}
       </div>
@@ -625,6 +630,7 @@ function detail(id, isRefresh) {
           <input id="s-poll" type="number" min="0" max="86400" value="${s.poll_interval}"
             onchange="saveSetting('poll_interval', this.value)">
           <div class="hint">0 = only when Check now is pressed. Otherwise at least 10.</div>
+          <div class="hint" id="s-pace"></div>
           <label for="s-steps">Rotation steps</label>
           <input id="s-steps" type="number" min="1" max="36" value="${s.rotation_steps}"
             onchange="saveSetting('rotation_steps', this.value)">
@@ -819,6 +825,8 @@ async function updateDetail(o) {
   if (!editorDirty) { setCrop(savedCrop(), true); drawOverlay(o); }
   const s = o.settings, el = document.getElementById("s-enabled"), poll = document.getElementById("s-poll");
   if (document.activeElement !== poll) poll.value = s.poll_interval;
+  document.getElementById("s-pace").textContent = o.effective_poll_s
+    ? `Checked every ${o.effective_poll_s} s: ${o.paced_by} on the same camera is checked more often, and objects on one camera are checked together.` : "";
   const steps = document.getElementById("s-steps");
   if (document.activeElement !== steps) steps.value = s.rotation_steps;
   const zero = document.getElementById("s-zero");
@@ -1055,6 +1063,7 @@ function editorHtml(title, help, extra = "", legend = "") {
       <img id="frame" alt="" style="display:none">
       <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
         <path id="dim" fill="rgba(0,0,0,.6)" fill-rule="evenodd" d=""/><g id="marks"></g></svg>
+      <div id="others"></div>
       <div class="crop" id="crop" style="display:none">
         <div class="handle h-nw" data-h="nw"></div><div class="handle h-ne" data-h="ne"></div>
         <div class="handle h-sw" data-h="sw"></div><div class="handle h-se" data-h="se"></div></div>
@@ -1091,9 +1100,28 @@ function fitToTag() {
   setCrop([cx - hx, cy - hy, cx + hx, cy + hy]);
 }
 
+// The primary feed an object reads (fallback ignored): objects with the same one
+// see the same frame, so their search areas are worth showing together.
+const feedOf = o => o.source + ":" + (o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity);
+
+function drawOthers(o) {
+  const box = document.getElementById("others");
+  if (!box) return;
+  const others = state.objects.filter(x => x.id !== o.id && feedOf(x) === feedOf(o));
+  box.innerHTML = others.map(x => {
+    const [x1, y1, x2, y2] = [x.settings.crop_x1, x.settings.crop_y1, x.settings.crop_x2, x.settings.crop_y2];
+    return `<div class="other-crop${x.settings.enabled ? "" : " off"}" title="${esc(x.name)} (${esc(tagLabel(x))})"
+      style="left:${x1 * 100}%;top:${y1 * 100}%;width:${(x2 - x1) * 100}%;height:${(y2 - y1) * 100}%">
+      <span>${esc(x.name)}</span></div>`;
+  }).join("");
+  const leg = document.getElementById("legend-others");
+  if (leg) leg.style.display = others.length ? "" : "none";
+}
+
 function drawOverlay(o) {
   const svg = document.getElementById("marks");
   if (!svg) return;
+  drawOthers(o);
   let out = "";
   if (o.last_corners) out += `<polygon points="${o.last_corners.map(p => p.join(",")).join(" ")}"
       fill="none" stroke="var(--quad)" stroke-width="0.004" vector-effect="non-scaling-stroke" style="stroke-width:2px"/>`;

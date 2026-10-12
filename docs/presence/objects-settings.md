@@ -18,9 +18,9 @@ Set on the object's page:
 
 | Setting | Default | What it does |
 |---|---|---|
-| **Search area** | bottom-right of the frame | The part of the frame searched. It must cover **every** spot where the object might be. Tighter is faster and leaves fewer places for phantoms, but too tight and an object moved slightly reads as absent. **Fit to tag** sets it from the learned position. Also the *Crop x1/y1/x2/y2* entities. |
+| **Search area** | bottom-right of the frame | The part of the frame searched. It must cover **every** spot where the object might be. Tighter is faster and leaves fewer places for phantoms, but too tight and an object moved slightly reads as absent. **Fit to tag** sets it from the learned position. Other objects on the same camera are shown as dashed outlines with their names. Also the *Crop x1/y1/x2/y2* entities. |
 | **Enabled** | on | Off pauses all checks; the main sensor goes unavailable. |
-| **Poll interval** | 60 s | How often a check runs on its own. `0` = only when *Check now* is pressed; otherwise at least 10. |
+| **Poll interval** | 60 s | How often a check runs on its own. `0` = only when *Check now* is pressed; otherwise at least 10. Objects on one camera are checked together, from the same frames, so the shortest interval among them sets the pace for all; the object's page says so when another object is setting it. |
 | **Rotation steps** | 4 | See [Rotation](rotation.md). |
 
 Objects on the same stream share one camera worker: each burst is fetched once
