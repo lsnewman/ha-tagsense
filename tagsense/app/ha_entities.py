@@ -24,6 +24,8 @@ CACHE_S = 60.0
 ENTITIES = {
     "presence": ("binary_sensor", None),
     "rotation": ("sensor", "Rotation"),
+    "home_distance": ("sensor", "Distance from home"),
+    "moved": ("binary_sensor", "Moved"),
     "check_now": ("button", "Check now"),
     "problem": ("binary_sensor", "Tag rejected"),
     "enabled": ("switch", "Enabled"),
@@ -44,9 +46,12 @@ def default_ids(obj_name: str) -> dict[str, str]:
 class EntityDirectory:
     """unique_id -> entity_id for TagSense's MQTT entities; never raises."""
 
-    def __init__(self, fetch=None, token: str | None = None):
+    def __init__(self, fetch=None, token: str | None = None, fetch_domains=None):
         self._token = token if token is not None else os.environ.get("SUPERVISOR_TOKEN", "")
         self._fetch = fetch or self._fetch_ws
+        self._fetch_domains = fetch_domains or self._fetch_domains_ws
+        self._domains: set[str] | None = None
+        self._domains_at: float | None = None
         self._lock = threading.Lock()
         self._ids: dict[str, str] = {}
         self._at: float | None = None   # never read yet (not 0: monotonic time can be small after a boot)
@@ -58,6 +63,28 @@ class EntityDirectory:
         return {e["unique_id"]: e["entity_id"]
                 for e in ws_command(self._token, "config/entity_registry/list") or []
                 if e.get("platform") == "mqtt" and str(e.get("unique_id", "")).startswith("tagsense_")}
+
+    def _fetch_domains_ws(self) -> set[str]:
+        if not self._token:
+            raise RuntimeError("no Supervisor token")
+        return {e.get("domain") for e in ws_command(self._token, "config_entries/get") or []}
+
+    def registered(self) -> dict[str, str] | None:
+        """unique_id -> entity_id for TagSense's entities, or None if unreadable."""
+        ids = self._current()
+        return None if self.error else ids
+
+    def mqtt_integration(self) -> bool | None:
+        """Whether Home Assistant has the MQTT integration set up (None = unknown)."""
+        with self._lock:
+            if self._domains_at is None or time.monotonic() - self._domains_at > CACHE_S:
+                try:
+                    self._domains = self._fetch_domains()
+                except Exception as e:      # noqa: BLE001
+                    self._domains = None
+                    log.debug("config entries not readable (%s)", e)
+                self._domains_at = time.monotonic()
+            return None if self._domains is None else "mqtt" in self._domains
 
     def _current(self) -> dict[str, str]:
         with self._lock:

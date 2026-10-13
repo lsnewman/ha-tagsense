@@ -2,6 +2,46 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.2
+
+**Upgrading:** nothing to do. Objects that have already learned their
+position take that as their home, so *Distance from home* and *Moved* work
+straight away; if the object was not in its usual place lately, press **Set
+current position as home** once it is. New entities appear by themselves.
+
+- **Mirrored tags:** a new **Mirrored** option on each object, for a camera
+  that shows the tag left-right reversed (a mirror or flip setting on the
+  camera, or a mirrored print). Until a tag has been seen once, a check that
+  finds nothing also looks for it mirrored, on one frame only, and says
+  *found mirrored* on the Last crop image and in Recent checks.
+- **Other objects in the search area editor:** the search areas of other
+  objects on the same camera are drawn as dashed, labelled outlines.
+- **Poll interval explained:** objects on one camera are checked together,
+  so the shortest interval among them sets the pace. An object's page now
+  says when another object is setting it.
+- **Distance from home and Moved:** each object now has a fixed home
+  position, set automatically once its position has been learned (10 hits)
+  or with **Set current position as home**. A **Distance from home** sensor
+  (in tag widths) and a **Moved** binary sensor, on past the per-object
+  **Moved threshold** (default 3), show when the object is somewhere other
+  than home. Reset learned position also resets home.
+- **Slow down when settled:** an optional per-object setting (off by
+  default). After 5 checks in a row that only confirm the state, the poll
+  interval doubles, up to the chosen limit; a miss while present, a state
+  change or Check now goes straight back to the poll interval.
+- **Health page:** each camera now shows its average fetch time and how
+  many of its last 50 fetches succeeded.
+- **MQTT problems explained in the panel:** TagSense no longer stops when
+  there is no MQTT broker (Mosquitto not installed); it starts, keeps the
+  panel working and connects by itself once a broker appears. A note at the
+  top of every page says what is wrong: no broker, login refused, broker not
+  reachable, the MQTT integration not set up, or Home Assistant not creating
+  an object's entities two minutes after it was published. Each links to
+  the new MQTT section of the getting-started guide.
+- **Debug bundle:** now also has the object list and software versions, and
+  optionally (on by default, confirmed before downloading) each object's
+  latest search-area images.
+
 ## 0.5.1
 
 **Upgrading:** nothing to do. Your detection settings are copied into the

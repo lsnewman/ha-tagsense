@@ -34,7 +34,7 @@ CONFIRM_RE = re.compile(r"/api/confirm/([A-Za-z0-9_-]{16,64})")
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 8 * 1024 * 1024        # an import with a day of chart history per object
 CONFIG_FIELDS = ("name", "tag_family", "tag_id", "source", "go2rtc_stream", "camera_entity",
-                 "fallback")
+                 "fallback", "mirrored")
 
 
 class ApiError(Exception):
@@ -64,6 +64,7 @@ class Api:
                              for f in FAMILIES},
                 "default_family": DEFAULT_FAMILY,
                 "objects": [o.status() for o in self.app.objects.values()],
+                "mqtt": self.app.mqtt_status(),
                 "access": {"enabled": self.app.access is not None,
                            "error": self.app.access_error,
                            # names only, for the panel's navigation
@@ -136,6 +137,11 @@ class Api:
         if not self._obj(oid).set_orientation():
             raise ApiError(409, "the object is not present: nothing to take 0° from")
         return {"set_orientation": oid}
+
+    def set_home(self, oid: str) -> dict:
+        if not self._obj(oid).set_home():
+            raise ApiError(409, "the object is not present: nothing to take home from")
+        return {"set_home": oid}
 
     def history(self, oid: str) -> list:
         return self._obj(oid).history_list()
@@ -552,6 +558,7 @@ ROUTES = [
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/check", "check"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/reset_reference", "reset_reference"),
     ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/set_orientation", "set_orientation"),
+    ("POST", r"/api/objects/(?P<oid>[a-z0-9_]+)/set_home", "set_home"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/history", "history"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/chart", "chart"),
     ("GET", r"/api/objects/(?P<oid>[a-z0-9_]+)/entities", "entities"),
@@ -596,7 +603,7 @@ ROUTES = [
 # The only routes a signed-in non-admin may use (the page itself, "/", has no data).
 # Every other route is admin-only: a new route is admin-only unless added here.
 NON_ADMIN_ROUTES = ("whoami", "pass_info", "pass_png")
-NO_BODY = ("check", "reset_reference", "set_orientation", "access_scan", "access_test", "access_clear_lockout",
+NO_BODY = ("check", "reset_reference", "set_orientation", "set_home", "access_scan", "access_test", "access_clear_lockout",
            "access_person_reenrol", "access_static_revoke", "access_static_revoke_all",
            "access_rotate_key", "access_confirm_rotate")
 
@@ -717,7 +724,7 @@ def make_handler(api: Api, allow_all: bool, trust_admin: bool = False):
                 if name in ("access_image", "access_frame"):
                     return self._send(200, getattr(api, name)(kw["sid"]), "image/jpeg")
                 if name == "debug_bundle":
-                    body = hl.debug_bundle(api.app)
+                    body = hl.debug_bundle(api.app, images=(query.get("images") or ["1"])[0] == "1")
                     self._attachment(f"tagsense-debug-{time.strftime('%Y%m%d-%H%M%S')}.zip")
                     return self._send(200, body, "application/zip")
                 if name == "access_debug":

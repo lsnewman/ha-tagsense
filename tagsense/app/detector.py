@@ -187,9 +187,15 @@ class Detection:
 
 class Detector:
     def __init__(self, tag_id: int = 5, max_aspect: float = DEFAULT_MAX_ASPECT,
-                 family: str = DEFAULT_FAMILY, params: aruco.DetectorParameters | None = None):
+                 family: str = DEFAULT_FAMILY, params: aruco.DetectorParameters | None = None,
+                 mirrored: bool = False):
         self.tag_id = int(tag_id)
         self.max_aspect = float(max_aspect)   # 0 disables the shape gate
+        # The camera shows the tag left-right reversed (a camera mirror/flip
+        # setting, or a mirrored print). A mirrored tag is not a valid code at
+        # any rotation, so the crop is flipped back before decoding. Off by
+        # default: never tried as a fallback, to keep phantom reads down.
+        self.mirrored = bool(mirrored)
         self.family = family_info(family)
         self._det = aruco.ArucoDetector(self.family.dictionary, params or build_params())
 
@@ -198,6 +204,8 @@ class Detector:
         px1, py1, px2, py2 = crop_pixels(bgr.shape, crop)
         gray = cv2.cvtColor(bgr[py1:py2, px1:px2], cv2.COLOR_BGR2GRAY)
         mean, std = (float(v[0][0]) for v in cv2.meanStdDev(gray))
+        if self.mirrored:
+            gray = cv2.flip(gray, 1)
         up = cv2.resize(gray, None, fx=UPSCALE, fy=UPSCALE, interpolation=cv2.INTER_CUBIC)
         corners, ids, _ = self._det.detectMarkers(up)
         ms = (time.perf_counter() - t0) * 1000.0
@@ -209,7 +217,10 @@ class Detector:
             return det
         offset = np.array([px1, py1], dtype=np.float32)
         for c, i in zip(corners, ids.flatten()):
-            full = c.reshape(4, 2) / UPSCALE + offset
+            c = c.reshape(4, 2) / UPSCALE
+            if self.mirrored:       # back to unflipped crop px (pixel centres)
+                c[:, 0] = (px2 - px1) - 1 - c[:, 0]
+            full = c + offset
             if int(i) != self.tag_id:
                 det.others.append(Phantom(int(i), full, (w, h)))
             elif self.max_aspect > 0 and quad_aspect(full) > self.max_aspect:
@@ -225,7 +236,7 @@ PHANTOM_BGR = (0, 140, 255)   # orange
 
 
 def annotate(bgr: np.ndarray, det: Detection, phantoms: list[Phantom] | None = None,
-             quality: int = 85) -> bytes:
+             quality: int = 85, note: str = "") -> bytes:
     """JPEG of the crop: target tag in green (with corner-0 dot), phantom
     decodes in orange. `phantoms` defaults to det.others; pass the whole
     burst's phantoms to show them all on one frame."""
@@ -248,5 +259,8 @@ def annotate(bgr: np.ndarray, det: Detection, phantoms: list[Phantom] | None = N
     else:
         cv2.putText(img, "no tag", (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                     (0, 0, 255), 2, cv2.LINE_AA)
+        if note:
+            cv2.putText(img, note, (8, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (0, 0, 255), 1, cv2.LINE_AA)
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return buf.tobytes() if ok else b""

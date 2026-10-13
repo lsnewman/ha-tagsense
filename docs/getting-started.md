@@ -38,6 +38,33 @@ The Configuration tab only holds what the panel needs before it can work:
 `mqtt_username`, `mqtt_password`), and Access's on switch and login.
 Everything else is set in the panel and takes effect without a restart.
 
+## MQTT
+
+TagSense reaches Home Assistant through MQTT: it publishes each object as a
+device, and Home Assistant's **MQTT integration** turns that into entities. Two
+things must be in place:
+
+1. **A broker.** Install and start the **Mosquitto broker** app
+   (**Settings → Apps → App store**). TagSense gets its login from the
+   Supervisor, so there is nothing to type. To use a different broker, set
+   `mqtt_host`, `mqtt_port`, `mqtt_username` and `mqtt_password` on TagSense's
+   Configuration tab instead.
+2. **The MQTT integration**, connected to that same broker. With Mosquitto it
+   usually appears under **Settings → Devices & services** as discovered: click
+   **Add**. Discovery must be left on (the default).
+
+TagSense starts without a broker and connects by itself once there is one.
+Until then, and whenever something is wrong, the panel shows a note at the top
+of every page:
+
+| Note | What to do |
+|---|---|
+| **No MQTT broker** | Install and start the Mosquitto broker app, or set `mqtt_host` and its login. |
+| **MQTT login refused** | Check `mqtt_username` / `mqtt_password` if you set them; otherwise restart the Mosquitto broker app, then TagSense. |
+| **Can't reach the MQTT broker** | Check the Mosquitto broker app is running, or `mqtt_host` / `mqtt_port` if you set them. |
+| **Home Assistant's MQTT integration is not set up** | Add the MQTT integration (step 2). |
+| **Home Assistant has not created TagSense's entities** | TagSense is connected, but two minutes after it published an object, Home Assistant still has no entities for it. Check the MQTT integration is connected to the same broker as TagSense, and that discovery is on. |
+
 ## Your first object
 
 1. In the panel, open **Presence** and click **Add object**.

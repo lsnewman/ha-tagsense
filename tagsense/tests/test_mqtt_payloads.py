@@ -49,7 +49,7 @@ def test_expected_components_and_attribute_topics():
     comps = {t.split("/")[1] for t in cfgs}
     assert comps == {"binary_sensor", "sensor", "button", "switch", "number", "image"}
     numbers = [p for t, p in cfgs.items() if t.split("/")[1] == "number"]
-    assert len(numbers) == 6 and all(p["retain"] is True for p in numbers)
+    assert len(numbers) == 8 and all(p["retain"] is True for p in numbers)
     warn = cfgs["homeassistant/sensor/tagsense_bin/warning/config"]
     assert warn["json_attributes_topic"] == "tagsense/bin/diag/reference/attributes"
     assert all("_attrs" not in p for p in cfgs.values())
@@ -68,7 +68,9 @@ def test_remove_clears_discovery_and_retained_topics():
     assert {t for t, _ in m.discovery_configs("1", "bin", "Bin")} <= cleared
     assert {"tagsense/bin/presence", "tagsense/bin/set/crop_x1", "tagsense/bin/setting/enabled",
             "tagsense/bin/rotation", "tagsense/bin/rotation/available", "tagsense/bin/set/rotation_steps",
-            "tagsense/bin/cmd/set_orientation"} <= cleared
+            "tagsense/bin/cmd/set_orientation", "tagsense/bin/home_distance", "tagsense/bin/moved",
+            "tagsense/bin/home_distance/available", "tagsense/bin/set/moved_threshold",
+            "tagsense/bin/cmd/set_home"} <= cleared
     assert all(t.startswith(("tagsense/bin/", "homeassistant/")) for t in cleared)
 
 
@@ -154,6 +156,35 @@ def test_rotation_entities_follow_presence():
     pub.publish_rotation(True, 180, 178.6, 4)
     assert c.msgs[1:] == [("tagsense/bin/rotation/attributes", '{"angle": 178.6, "steps": 4}'),
                           ("tagsense/bin/rotation", "180"), ("tagsense/bin/rotation/available", "online")]
+
+
+def test_home_entities_follow_presence():
+    cfgs = configs()
+    dist = cfgs["homeassistant/sensor/tagsense_bin/home_distance/config"]
+    assert dist["unit_of_measurement"] == "tag widths" and dist["state_class"] == "measurement"
+    for key in ("sensor/tagsense_bin/home_distance", "binary_sensor/tagsense_bin/moved"):
+        p = cfgs[f"homeassistant/{key}/config"]
+        assert {a["topic"] for a in p["availability"]} == {m.AVAILABILITY,
+                                                           "tagsense/bin/home_distance/available"}
+    thr = cfgs["homeassistant/number/tagsense_bin/moved_threshold/config"]
+    assert (thr["min"], thr["max"], thr["entity_category"]) == (0, 50, "config")
+    c = _Client()
+    pub = m.ObjectPublisher(c, "bin", "Bin")
+    pub.publish_home(False, None, False, {})
+    assert c.msgs == [("tagsense/bin/home_distance/available", "offline")]
+    pub.publish_home(True, 4.2, True, {"home": [0.5, 0.5], "threshold": 3.0})
+    assert c.msgs[1:] == [("tagsense/bin/home_distance/attributes", '{"home": [0.5, 0.5], "threshold": 3.0}'),
+                          ("tagsense/bin/home_distance", "4.2"), ("tagsense/bin/moved", "ON"),
+                          ("tagsense/bin/home_distance/available", "online")]
+
+
+def test_moved_threshold_setting():
+    s = Settings()
+    assert s.moved_threshold == 3.0
+    assert s.set("moved_threshold", "2.25") and s.moved_threshold == 2.2
+    assert s.set("moved_threshold", "-1") and s.moved_threshold == 0.0
+    assert s.set("moved_threshold", "999") and s.moved_threshold == 50.0
+    assert not s.set("moved_threshold", "x")
 
 
 def test_rotation_steps_setting():

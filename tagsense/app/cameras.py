@@ -10,6 +10,7 @@ import hashlib
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime
 
 from .sanity import decode_jpeg
@@ -18,6 +19,8 @@ from .sources import FetchError, Frame, Source
 from .tracker import Burst, TrackedObject
 
 log = logging.getLogger("tagsense")
+
+RECENT_FETCHES = 50     # for the Health page: fetch time and success rate
 
 
 class CameraWorker:
@@ -32,6 +35,7 @@ class CameraWorker:
         self.objects: list[TrackedObject] = []
         self.last_error: str | None = None
         self.fetch_failures_total = 0
+        self.recent: deque[float | None] = deque(maxlen=RECENT_FETCHES)   # fetch ms, None = failed
         self.fetch_lock = threading.Lock()     # bursts and UI grabs share the source
         self.last_frame: Frame | None = None   # newest good frame, for the web UI
         self.last_frame_at = 0.0
@@ -65,6 +69,14 @@ class CameraWorker:
             except Exception:       # never let one bad check kill the worker
                 log.exception("[%s] check failed", self.name)
 
+    def fetch_stats(self) -> dict:
+        """Over the last RECENT_FETCHES burst fetches."""
+        recent = list(self.recent)
+        ok = [ms for ms in recent if ms is not None]
+        return {"recent_fetches": len(recent),
+                "success_pct": round(100.0 * len(ok) / len(recent)) if recent else None,
+                "fetch_ms_avg": round(sum(ok) / len(ok)) if ok else None}
+
     def fetch(self) -> Frame:
         with self.fetch_lock:
             frame = self.source.fetch()
@@ -89,9 +101,11 @@ class CameraWorker:
                 frame = self.fetch()
             except FetchError as e:
                 b.failures += 1
+                self.recent.append(None)
                 self.last_error = f"{datetime.now().strftime('%H:%M:%S')} {e}"
                 log.warning("[%s] fetch failed: %s", self.name, e)
                 continue
+            self.recent.append(frame.fetch_ms)
             b.hashes.add(hashlib.blake2b(frame.data, digest_size=16).digest())
             b.frames.append(frame)
             b.images.append(decode_jpeg(frame.data))

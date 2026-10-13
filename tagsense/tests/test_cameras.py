@@ -292,3 +292,56 @@ def test_rotation_unavailable_when_absent(tmp_path):
     assert client.last("tagsense/recycling/rotation/available") == "offline"
     assert client.last("tagsense/recycling/rotation") is None
     assert not r.set_orientation()
+
+
+def test_moved_from_home_and_set_home(tmp_path):
+    cam, client, objs = trained_bin(tmp_path, 0.046)
+    b = objs["bin"]
+    b.reference.set_home(0.046, 0.5, 0.68)               # home far to the left
+    b.on_check_now()
+    run_once(cam)
+    dist = float(client.last("tagsense/bin/home_distance"))
+    assert dist > 10 and client.last("tagsense/bin/moved") == "ON"
+    assert client.last("tagsense/bin/home_distance/available") == "online"
+    assert b.status()["moved"] and b.history_list()[0]["home_distance"] == dist
+    assert (b.snapshots.list()[0]["from"], b.snapshots.list()[0]["to"]) == ("home", "moved")
+    b.on_setting("moved_threshold", str(dist * 0.9))     # inside the hysteresis band: stays on
+    assert client.last("tagsense/bin/moved") == "ON"
+    b.on_setting("moved_threshold", "0")                 # off
+    assert client.last("tagsense/bin/moved") == "OFF"
+    b.on_setting("moved_threshold", "3")
+    assert b.set_home()
+    assert client.last("tagsense/bin/home_distance") == "0"
+    assert client.last("tagsense/bin/moved") == "OFF"
+    b.on_check_now()
+    run_once(cam)
+    assert float(client.last("tagsense/bin/home_distance")) < 0.5
+    b.reset_reference()
+    assert b.reference.home is None
+    assert client.last("tagsense/bin/home_distance/available") == "offline"
+
+
+def test_set_home_needs_a_hit(tmp_path):
+    cam, src, client, objs = setup(tmp_path, burst=1, tags=(("recycling", 7),))
+    r = objs["recycling"]
+    assert not r.set_home()
+    r.on_check_now()
+    run_once(cam)
+    assert not r.set_home()
+    assert client.last("tagsense/recycling/home_distance/available") == "offline"
+
+
+def test_slowdown_only_on_checks_that_confirm_the_state(tmp_path):
+    from app.scheduler import POLL, STEADY_CHECKS
+    cam, src, client, objs = setup(tmp_path, tags=(("bin", 5),))
+    b = objs["bin"]
+    b.on_setting("slowdown_max", "4")
+    b.on_check_now()
+    run_once(cam)                                        # manual: absent -> present, not steady
+    assert b.sched.factor == 1
+    for _ in range(STEADY_CHECKS):
+        b.process(POLL, cam.fetch_burst([b]))           # present and seen: steady
+    assert b.sched.factor == 2 and b.status()["current_interval_s"] == 120
+    src.jpeg = cv2.imencode(".jpg", np.zeros((1080, 1920, 3), np.uint8) + 128)[1].tobytes()
+    b.process(POLL, cam.fetch_burst([b]))               # a miss while present: back to 60 s
+    assert b.sched.factor == 1 and b.status()["current_interval_s"] is None

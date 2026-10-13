@@ -10,6 +10,7 @@ object's page. Changes apply straight away, without restarting the app.
 | **Name** | What the tag is on. It names the device ("TagSense Bin") and its main sensor, and can be changed at any time. |
 | **ID** | A short, stable identifier (lowercase letters, digits, `_`) used in entity IDs, MQTT topics and the data folder. Made from the name unless you type one, and **cannot be changed later**. Renaming the object keeps it, so its entities and history stay. |
 | **Tag family** and **Tag ID** | What is printed on the object. Two objects on the same camera need different tags (same family and ID); the same tag on different cameras is fine. |
+| **Mirrored** | The camera shows the tag left-right reversed: a mirror or flip setting on the camera, or a mirrored print. Off by default. Until the tag has been seen once, a check that finds nothing also looks for it the other way round, on one frame only, and says so if it finds it. |
 | **Camera** | A **go2rtc stream** (fetched as `<go2rtc_url>/api/frame.jpeg?src=<stream>`; choose the highest-resolution stream that connects directly to the camera) or a **Home Assistant camera**, read through the camera proxy. |
 | **Fallback** | Try the other source when the main one fails: a go2rtc object falls back to its Home Assistant camera (often lower resolution), and a camera object to its go2rtc stream. |
 
@@ -17,10 +18,12 @@ Set on the object's page:
 
 | Setting | Default | What it does |
 |---|---|---|
-| **Search area** | bottom-right of the frame | The part of the frame searched. It must cover **every** spot where the object might be. Tighter is faster and leaves fewer places for phantoms, but too tight and an object moved slightly reads as absent. **Fit to tag** sets it from the learned position. Also the *Crop x1/y1/x2/y2* entities. |
+| **Search area** | bottom-right of the frame | The part of the frame searched. It must cover **every** spot where the object might be. Tighter is faster and leaves fewer places for phantoms, but too tight and an object moved slightly reads as absent. **Fit to tag** sets it from the learned position. Other objects on the same camera are shown as dashed outlines with their names. Also the *Crop x1/y1/x2/y2* entities. |
 | **Enabled** | on | Off pauses all checks; the main sensor goes unavailable. |
-| **Poll interval** | 60 s | How often a check runs on its own. `0` = only when *Check now* is pressed; otherwise at least 10. |
+| **Poll interval** | 60 s | How often a check runs on its own. `0` = only when *Check now* is pressed; otherwise at least 10. Objects on one camera are checked together, from the same frames, so the shortest interval among them sets the pace for all; the object's page says so when another object is setting it. |
+| **Slow down when settled** | 1 (off) | Up to how many times the poll interval checks may slow down to. After 5 checks in a row that only confirm the state (the tag seen while present, or not seen while absent), the interval doubles, up to this limit. A miss while present, a change of state, *Check now*, or a failed check goes straight back to the poll interval. Because objects on one camera are checked together, it only saves work when every object on that camera has slowed down. |
 | **Rotation steps** | 4 | See [Rotation](rotation.md). |
+| **Moved threshold** | 3 tag widths | How far from its home the tag must be for *Moved* to turn on; `0` = off. Home is set from the learned position after 10 hits, shown as a circle on the search area, and changed with **Set current position as home** (only while present). It does not follow the object, so *Distance from home* stays high for as long as the object is somewhere else. |
 
 Objects on the same stream share one camera worker: each burst is fetched once
 and judged by all of them. Different cameras are checked in parallel. The other

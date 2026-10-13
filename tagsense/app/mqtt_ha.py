@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -23,7 +25,7 @@ SUPPORT_URL = "https://github.com/lsnewman/ha-tagsense"
 ENUM_PRESENT, ENUM_ABSENT, ENUM_UNKNOWN = "present", "absent", "unknown"
 
 SETTING_KEYS = ("poll_interval", "crop_x1", "crop_y1", "crop_x2", "crop_y2", "enabled",
-                "rotation_steps")
+                "rotation_steps", "moved_threshold", "slowdown_max")
 
 # (key, name, extra discovery fields); "{attrs}" is replaced by an attributes topic
 DIAGNOSTICS = [
@@ -53,7 +55,7 @@ DIAGNOSTICS = [
 ]
 # Removed entities: their discovery config is cleared so HA deletes them.
 RETIRED_DIAGNOSTICS = ("last_check",)
-COMMANDS = ("check_now", "reset_reference", "set_orientation")
+COMMANDS = ("check_now", "reset_reference", "set_orientation", "set_home")
 DIAG_ATTRS = ("reference", "phantoms", "crop_stats")
 
 
@@ -112,6 +114,10 @@ class Topics:
         self.rotation = f"{b}/rotation"
         self.rotation_attrs = f"{b}/rotation/attributes"
         self.rotation_available = f"{b}/rotation/available"
+        self.home_distance = f"{b}/home_distance"
+        self.home_attrs = f"{b}/home_distance/attributes"
+        self.moved = f"{b}/moved"
+        self.home_available = f"{b}/home_distance/available"
 
     def cmd(self, name: str) -> str:
         return f"{self.base}/cmd/{name}"
@@ -140,6 +146,9 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
     # Rotation entities only make sense while the object is there.
     rot_avail = {"availability": app_avail + [{"topic": t.rotation_available}],
                  "availability_mode": "all"}
+    # Distance from home and Moved: only while present and once home is known.
+    home_avail = {"availability": app_avail + [{"topic": t.home_available}],
+                  "availability_mode": "all"}
 
     def cfg(component: str, key: str, payload: dict) -> tuple[str, dict]:
         p = {"unique_id": f"tagsense_{obj_id}_{key}", "device": device, "origin": origin,
@@ -178,6 +187,23 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
         cfg("button", "set_orientation", {
             "name": "Set current orientation as 0°", "entity_category": "config",
             "command_topic": t.cmd("set_orientation"), "icon": "mdi:rotate-left", **rot_avail}),
+        cfg("sensor", "home_distance", {
+            "name": "Distance from home", "unit_of_measurement": "tag widths",
+            "state_class": "measurement", "suggested_display_precision": 1,
+            "icon": "mdi:map-marker-distance", "state_topic": t.home_distance,
+            "json_attributes_topic": t.home_attrs, **home_avail}),
+        cfg("binary_sensor", "moved", {
+            "name": "Moved", "icon": "mdi:map-marker-alert-outline", "state_topic": t.moved,
+            "json_attributes_topic": t.home_attrs, **home_avail}),
+        cfg("number", "moved_threshold", {
+            "name": "Moved threshold", "entity_category": "config", "mode": "box",
+            "min": 0, "max": 50, "step": 0.5, "unit_of_measurement": "tag widths",
+            "icon": "mdi:map-marker-radius-outline",
+            "command_topic": t.set("moved_threshold"), "state_topic": t.setting("moved_threshold"),
+            "retain": True}),
+        cfg("button", "set_home", {
+            "name": "Set home position", "entity_category": "config",
+            "command_topic": t.cmd("set_home"), "icon": "mdi:home-map-marker", **rot_avail}),
         cfg("switch", "enabled", {
             "name": "Enabled", "entity_category": "config",
             "command_topic": t.set("enabled"), "state_topic": t.setting("enabled"),
@@ -187,6 +213,11 @@ def discovery_configs(version: str, obj_id: str, name: str) -> list[tuple[str, d
             "min": 0, "max": 86400, "step": 1, "unit_of_measurement": "s",
             "icon": "mdi:timer-outline",
             "command_topic": t.set("poll_interval"), "state_topic": t.setting("poll_interval"),
+            "retain": True}),
+        cfg("number", "slowdown_max", {
+            "name": "Slow down when settled", "entity_category": "config", "mode": "box",
+            "min": 1, "max": 8, "step": 1, "icon": "mdi:timer-sand",
+            "command_topic": t.set("slowdown_max"), "state_topic": t.setting("slowdown_max"),
             "retain": True}),
         cfg("image", "last_crop", {"name": "Last crop", "image_topic": t.image,
                                    "content_type": "image/jpeg"}),
@@ -261,6 +292,13 @@ class ObjectPublisher:
             self.pub(self.t.rotation, fmt(value))
         self.pub(self.t.rotation_available, ONLINE if available else OFFLINE)
 
+    def publish_home(self, available: bool, distance: float | None, moved: bool, attrs: dict):
+        if available:
+            self.pub(self.t.home_attrs, json.dumps(attrs))
+            self.pub(self.t.home_distance, fmt(distance))
+            self.pub(self.t.moved, "ON" if moved else "OFF")
+        self.pub(self.t.home_available, ONLINE if available else OFFLINE)
+
     def publish_image(self, jpeg: bytes):
         self.pub(self.t.image, jpeg, retain=False)
 
@@ -269,7 +307,8 @@ class ObjectPublisher:
         t = self.t
         topics = [topic for topic, _ in discovery_configs(self.client.version, self.id, self.name)]
         topics += [t.presence, t.presence_attrs, t.presence_available, t.status, t.status_attrs,
-                   t.problem, t.problem_attrs, t.rotation, t.rotation_attrs, t.rotation_available]
+                   t.problem, t.problem_attrs, t.rotation, t.rotation_attrs, t.rotation_available,
+                   t.home_distance, t.home_attrs, t.moved, t.home_available]
         topics += [t.cmd(c) for c in COMMANDS] + self._retired_topics()
         topics += [t.setting(k) for k in SETTING_KEYS] + [t.set(k) for k in SETTING_KEYS]
         topics += [t.diag(k) for k, _, _ in DIAGNOSTICS]
@@ -278,10 +317,21 @@ class ObjectPublisher:
             self.pub(topic, b"")
 
 
-class MqttClient:
-    """The shared connection. Routes commands to objects by id."""
+# Why there is no connection, for the panel's banner (None = connected or connecting).
+NO_BROKER, LOGIN_REFUSED, UNREACHABLE, REFUSED = "no_broker", "login_refused", "unreachable", "refused"
+BROKER_RETRY_S = 60.0
+_LOGIN_CODES = {4, 5, 134, 135}     # bad user name or password / not authorised (3.1.1 and 5)
 
-    def __init__(self, cfg: MqttConfig, version: str,
+
+class MqttClient:
+    """The shared connection. Routes commands to objects by id.
+
+    Never stops the app: with no broker yet (Mosquitto not installed, no override)
+    it keeps asking the Supervisor every BROKER_RETRY_S and connects once there is
+    one. Publishes while not connected are dropped: every (re)connect republishes
+    everything that matters."""
+
+    def __init__(self, cfg: MqttConfig | Callable[[], MqttConfig], version: str,
                  on_connected: Callable[[bool], None],
                  on_setting: Callable[[str, str, str], None],
                  on_command: Callable[[str, str], None],
@@ -291,38 +341,84 @@ class MqttClient:
         self._on_setting = on_setting
         self._on_command = on_command
         self._on_ha_restart = on_ha_restart
+        self._cfg_source = cfg if callable(cfg) else (lambda: cfg)
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tagsense")
-        if cfg.username:
-            c.username_pw_set(cfg.username, cfg.password)
         c.will_set(AVAILABILITY, OFFLINE, qos=1, retain=True)
         c.reconnect_delay_set(1, 60)
         c.on_connect = self._handle_connect
+        c.on_connect_fail = self._handle_connect_fail
         c.on_message = self._handle_message
-        c.on_disconnect = lambda *a: log.warning("MQTT disconnected")
+        c.on_disconnect = self._handle_disconnect
         self.client = c
-        self.cfg = cfg
+        self.cfg: MqttConfig | None = None
+        self.connected = False
+        self.connected_at: float | None = None     # monotonic, last successful connect
+        self.problem: str | None = None
+        self.problem_detail: str | None = None
         self._connected_once = False
+        self._stop = threading.Event()
 
     def start(self):
-        log.info("connecting to MQTT %s:%s", self.cfg.host, self.cfg.port)
-        self.client.connect_async(self.cfg.host, self.cfg.port, keepalive=60)
-        self.client.loop_start()
+        threading.Thread(target=self._connect_loop, name="mqtt-setup", daemon=True).start()
+
+    def _connect_loop(self):
+        while not self._stop.is_set():
+            try:
+                cfg = self._cfg_source()
+            except RuntimeError as e:
+                if self.problem != NO_BROKER:
+                    log.error("no MQTT broker: %s (retrying every %ds)", e, BROKER_RETRY_S)
+                self.problem, self.problem_detail = NO_BROKER, str(e)
+                self._stop.wait(BROKER_RETRY_S)
+                continue
+            self.cfg = cfg
+            if cfg.username:
+                self.client.username_pw_set(cfg.username, cfg.password)
+            self.problem = self.problem_detail = None
+            log.info("connecting to MQTT %s:%s", cfg.host, cfg.port)
+            self.client.connect_async(cfg.host, cfg.port, keepalive=60)
+            self.client.loop_start()
+            return
+
+    def status(self) -> dict:
+        return {"connected": self.connected, "problem": None if self.connected else self.problem,
+                "detail": None if self.connected else self.problem_detail,
+                "broker": f"{self.cfg.host}:{self.cfg.port}" if self.cfg else None}
 
     def stop(self):
-        self.client.publish(AVAILABILITY, OFFLINE, qos=1, retain=True).wait_for_publish(5)
+        self._stop.set()
+        if self.cfg is None:
+            return
+        if self.connected:
+            self.client.publish(AVAILABILITY, OFFLINE, qos=1, retain=True).wait_for_publish(5)
         self.client.disconnect()
         self.client.loop_stop()
 
     def pub(self, topic: str, payload, retain: bool = True):
+        if not self.connected:
+            return
         self.client.publish(topic, payload, qos=1 if retain else 0, retain=retain)
 
     # --- callbacks (paho thread: keep short) ------------------------------
 
+    def _handle_connect_fail(self, client, userdata):
+        if self.problem != UNREACHABLE:
+            log.error("MQTT broker %s:%s not reachable", self.cfg.host, self.cfg.port)
+        self.problem, self.problem_detail = UNREACHABLE, f"cannot reach {self.cfg.host}:{self.cfg.port}"
+
+    def _handle_disconnect(self, client, userdata, flags, reason_code, properties):
+        self.connected = False
+        log.warning("MQTT disconnected (%s)", reason_code)
+
     def _handle_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code.is_failure:
             log.error("MQTT connect failed: %s", reason_code)
+            self.problem = LOGIN_REFUSED if reason_code.value in _LOGIN_CODES else REFUSED
+            self.problem_detail = str(reason_code)
             return
         log.info("MQTT connected")
+        self.connected, self.connected_at = True, time.monotonic()
+        self.problem = self.problem_detail = None
         first = not self._connected_once
         self._connected_once = True
         # Discovery and settings are published by the app before subscribing, so

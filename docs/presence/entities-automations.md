@@ -13,9 +13,12 @@ for example `binary_sensor.tagsense_bin`, `sensor.tagsense_bin_status` and
 | **Check now** (button) | Checks straight away. If the tag is not found, confirmation checks follow until absent is confirmed or the tag is seen. |
 | **Rotation** (sensor, °) | How far the tag is turned from 0°, clockwise as seen by the camera, in *Rotation steps*. Attributes `angle` (exact) and `steps`. Unavailable while the object is not present. |
 | **Rotation steps** (number), **Set current orientation as 0°** (button) | See [Rotation](rotation.md). |
+| **Distance from home** (sensor, tag widths) | How far the tag is from its home position, measured in widths of the tag itself, so it reads the same whatever the camera's resolution. Home is set automatically once the position has been learned (10 hits) and stays fixed until you change it. Attributes `home` and `threshold`. Unavailable while the object is not present. |
+| **Moved** (binary sensor) | On when *Distance from home* is more than *Moved threshold*; off again below 80% of it, so a tag near the line does not flap. Unavailable while the object is not present. |
+| **Moved threshold** (number), **Set home position** (button) | The distance for *Moved*, in tag widths (`0` = off), and a button that makes where the tag is now its home. |
 | **Tag rejected** (problem sensor) | On after 3 checks in a row in which the tag was read but every read was rejected by the shape gate. A Home Assistant notification explains why (too small or too skewed) and what to change if the object really is there. Both clear by themselves after a check without rejected reads. |
-| **Reset learned position** (button) | Forgets the learned usual size, position and 0°, for example after moving the object further from the camera. |
-| **Enabled** (switch), **Poll interval** (number), **Crop x1/y1/x2/y2** (numbers) | The same settings as the object's page. |
+| **Reset learned position** (button) | Forgets the learned usual size, position, home and 0°, for example after moving the object further from the camera. |
+| **Enabled** (switch), **Poll interval**, **Slow down when settled**, **Crop x1/y1/x2/y2** (numbers) | The same settings as the object's page. |
 | **Last crop** (image) | The latest search area, annotated: the tag in green with its ID, size and a red dot on corner 0; ignored and rejected reads in orange. |
 | Diagnostics | Last source, frame resolution, last error, warning, fetch time, detect time, fetch failures, discard rate, unique frames, discarded decodes, tag size, tag aspect, sanity ratio, miss streak, crop brightness, crop contrast. |
 
@@ -55,6 +58,7 @@ ready-made automations to paste into a new automation's YAML editor
 - gone for a long time;
 - back in place;
 - back, but turned the wrong way (when rotation is on);
+- moved from its home (when *Moved threshold* is not 0);
 - check straight away when something else happens.
 
 For example, a reminder:

@@ -4,6 +4,10 @@ Warns (never rejects) when a hit is far from what is normal for this install,
 which is what a phantom decode of the target ID tends to look like. Learned
 from accepted hits as an exponential moving average, so it needs no setup and
 slowly follows a permanent move of the tagged object.
+
+Home is a fixed copy of that average, taken once MIN_HITS are learned (or set
+by the user). It does not follow moves, so the distance from home says how far
+the object is from where it belongs, for as long as it stays away.
 """
 from __future__ import annotations
 
@@ -29,10 +33,42 @@ class Reference:
     cy: float = 0.0
     orient: list | None = None  # normalised corners that define 0 deg (None = not set yet)
     updated: float = 0.0        # unix time of the last change (export/import: newer wins)
+    home_size: float | None = None  # home: fixed, same units as size / cx / cy
+    home_cx: float | None = None
+    home_cy: float | None = None
+
+    def __post_init__(self):
+        self._ensure_home()     # learned before home existed (0.5.1 and older)
 
     @property
     def ready(self) -> bool:
         return self.hits >= MIN_HITS
+
+    @property
+    def home(self) -> list[float] | None:
+        return None if self.home_size is None else [self.home_cx, self.home_cy]
+
+    def _ensure_home(self) -> bool:
+        """Take home from the learned average once it is ready. True if it was set now."""
+        if self.home_size is not None or not self.ready:
+            return False
+        self.home_size, self.home_cx, self.home_cy = self.size, self.cx, self.cy
+        return True
+
+    def set_home(self, size: float, cx: float, cy: float):
+        self.home_size, self.home_cx, self.home_cy = size, cx, cy
+        self.updated = time.time()
+
+    def distance(self, det: Detection) -> float | None:
+        """How far a hit is from home, in tag widths (home's tag), or None."""
+        if not det.found or not self.home_size:
+            return None
+        _, cx, cy = self._measure(det)
+        w, h = det.frame_wh
+        dx = (cx - self.home_cx) * w / h            # both in frame heights
+        dy = cy - self.home_cy
+        width = self.home_size / math.sqrt(2)       # size is the diagonal
+        return round(math.hypot(dx, dy) / width, 1)
 
     @staticmethod
     def _measure(det: Detection) -> tuple[float, float, float]:
@@ -66,6 +102,7 @@ class Reference:
             self.cx += a * (cx - self.cx)
             self.cy += a * (cy - self.cy)
         self.hits += 1
+        self._ensure_home()
         self.updated = time.time()
 
     def set_orient(self, corners_norm):
@@ -75,7 +112,8 @@ class Reference:
     def as_attrs(self) -> dict:
         return {"learned_hits": self.hits, "usual_size_pct": round(self.size * 100, 2),
                 "usual_centre": [round(self.cx, 3), round(self.cy, 3)],
-                "warnings_active": self.ready}
+                "warnings_active": self.ready,
+                "home": [round(v, 3) for v in self.home] if self.home else None}
 
     def save(self, path: str):
         tmp = f"{path}.tmp"

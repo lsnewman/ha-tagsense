@@ -27,7 +27,9 @@ def test_registry_wins_and_failures_fall_back(monkeypatch):
                 "tagsense_bin_rotation": "sensor.tagsense_bin_rotation",
                 "tagsense_bin_check_now": "button.tagsense_bin_check_now",
                 "tagsense_bin_problem": "binary_sensor.tagsense_bin_tag_rejected",
-                "tagsense_bin_enabled": "switch.tagsense_bin_enabled"}
+                "tagsense_bin_enabled": "switch.tagsense_bin_enabled",
+                "tagsense_bin_home_distance": "sensor.tagsense_bin_distance_from_home",
+                "tagsense_bin_moved": "binary_sensor.tagsense_bin_moved"}
     d = EntityDirectory(fetch=fetch)
     monkeypatch.setattr(time, "monotonic", lambda: 5.0)       # just after a boot
     r = d.for_object("bin", "Bin")

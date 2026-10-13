@@ -90,13 +90,18 @@ class TrackedObject:
         self.settings_path = os.path.join(d, "settings.json")
         self.state_path = os.path.join(d, "state.json")
         self.reference_path = os.path.join(d, "reference.json")
-        self.detector = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family)
+        self.detector = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family, mirrored=oc.mirrored)
+        # The same tag the other way round, tried on one frame of a miss only
+        # until the tag has been seen once (see _mirror_hint).
+        self.mirror_probe = Detector(oc.tag_id, tuning.max_aspect, oc.tag_family, mirrored=not oc.mirrored)
         self.settings = Settings.load(self.settings_path)
         self.decision = dec.Decision.load(self.state_path)
         self.reference = Reference.load(self.reference_path)
         self.sched = Scheduler(time.monotonic(), self.settings.poll_interval,
-                               tuning.confirm_delay_s, self.settings.enabled)
+                               tuning.confirm_delay_s, self.settings.enabled,
+                               self.settings.slowdown_max)
         self.camera = None                  # CameraWorker, set by the app
+        self.discovered_at: float | None = None     # monotonic, last discovery publish
         self.known_ids: set[int] = set()   # other objects' tags (same family) on this camera
         self.last_phantom: dict | None = None
         # For the web UI
@@ -111,6 +116,11 @@ class TrackedObject:
         # (kept while the object is away; its entities are unavailable then).
         self.rotation: float | None = None
         self.rotation_angle: float | None = None
+        # Distance from home (tag widths) while present, Moved past the threshold,
+        # and the last hit's (size, cx, cy) for "Set home here".
+        self.home_distance: float | None = None
+        self.moved = False
+        self.last_measure: tuple[float, float, float] | None = None
         self.snapshots = Snapshots(os.path.join(d, "snapshots"))
         self.checklog = CheckLog(os.path.join(d, "checks.jsonl"))
         # Rejection alert: reasons from the latest check with rejected target reads,
@@ -131,7 +141,8 @@ class TrackedObject:
         s = self.settings
         return {"poll_interval": s.poll_interval, "crop_x1": s.crop_x1, "crop_y1": s.crop_y1,
                 "crop_x2": s.crop_x2, "crop_y2": s.crop_y2, "enabled": s.enabled,
-                "rotation_steps": s.rotation_steps}
+                "rotation_steps": s.rotation_steps, "moved_threshold": s.moved_threshold,
+                "slowdown_max": s.slowdown_max}
 
     def on_setting(self, key: str, value: str, from_api: bool = False):
         with self.cond:
@@ -142,12 +153,17 @@ class TrackedObject:
                 now = time.monotonic()
                 if key == "poll_interval":
                     self.sched.set_poll_interval(self.settings.poll_interval, now)
+                elif key == "slowdown_max":
+                    self.sched.set_slowdown(self.settings.slowdown_max, now)
                 elif key == "enabled":
                     self.sched.set_enabled(self.settings.enabled, now)
                     self._publish_state_locked()
                 elif key == "rotation_steps" and self.rotation_angle is not None:
                     self.rotation = snap(self.rotation_angle, self.settings.rotation_steps)
                     self._publish_rotation_locked()
+                elif key == "moved_threshold":
+                    self._update_moved_locked()
+                    self._publish_home_locked()
                 self.cond.notify_all()
             stored = getattr(self.settings, key)
         # Echo the stored (possibly clamped) value. Overwrite the retained command
@@ -173,6 +189,7 @@ class TrackedObject:
             self.reference = Reference(updated=time.time())   # also forgets 0 deg
             self.reference.save(self.reference_path)
             self.rotation = self.rotation_angle = None
+            self.home_distance, self.moved = None, False        # home goes too
             self.decision.reject_streak = 0
             self.decision.save(self.state_path)
             self._publish_state_locked()
@@ -193,6 +210,21 @@ class TrackedObject:
         log.info("[%s] current orientation set as 0°", self.id)
         return True
 
+    def set_home(self) -> bool:
+        """Make the tag's current position home. False if there is no hit to use."""
+        with self.cond:
+            present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
+            if self.last_measure is None or not present:
+                log.warning("[%s] set home: the object is not present", self.id)
+                return False
+            self.reference.set_home(*self.last_measure)
+            self.reference.save(self.reference_path)
+            self.home_distance = 0.0
+            self._update_moved_locked()
+            self._publish_home_locked()
+        log.info("[%s] current position set as home", self.id)
+        return True
+
     def request(self, trigger: str):
         with self.cond:
             self.sched.request(trigger)
@@ -203,6 +235,7 @@ class TrackedObject:
         with self.cond:
             values = self.settings_values()
         self.pub.publish_discovery()
+        self.discovered_at = time.monotonic()
         self.pub.publish_settings(values, also_commands)
         with self.cond:
             self._publish_state_locked()
@@ -216,6 +249,26 @@ class TrackedObject:
                                 "last_seen": iso(self.decision.last_seen_ts)})
         self.pub.publish_problem(self._alert_locked())
         self._publish_rotation_locked()
+        self._publish_home_locked()
+
+    def _update_moved_locked(self):
+        """Moved past the threshold; off again below 80% of it, so a tag sitting
+        near the threshold does not flap."""
+        t, d = self.settings.moved_threshold, self.home_distance
+        if not t or d is None:
+            self.moved = False
+        elif d > t:
+            self.moved = True
+        elif d <= 0.8 * t:
+            self.moved = False
+
+    def _publish_home_locked(self):
+        present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
+        home = self.reference.home
+        self.pub.publish_home(present and home is not None and self.home_distance is not None,
+                              self.home_distance, self.moved,
+                              {"home": [round(v, 3) for v in home] if home else None,
+                               "threshold": self.settings.moved_threshold})
 
     def _publish_rotation_locked(self):
         present = self.decision.reported(self.cfg, self.settings.enabled)[0] == dec.PRESENT
@@ -337,12 +390,17 @@ class TrackedObject:
         warnings = []
         if validate_crop(raw_crop) != tuple(raw_crop):
             warnings.append(f"crop {raw_crop} invalid, using {crop}")
-        angle = None
+        angle = dist = None
         if best:
             if gw := self.reference.warning(best.det):     # compare before learning
                 warnings.append(gw)
                 log.warning("[%s] geometry: %s", self.id, gw)
+            dist = self.reference.distance(best.det)       # also before learning
+            had_home = self.reference.home is not None
             self.reference.learn(best.det)
+            self.last_measure = Reference._measure(best.det)
+            if not had_home and self.reference.home is not None:
+                log.info("[%s] home set from the learned position", self.id)
             if self.reference.orient is None:
                 self.reference.set_orient(_norm(best.det.corners, best.det.frame_wh))
                 log.info("[%s] rotation 0° set from the first hit", self.id)
@@ -357,6 +415,11 @@ class TrackedObject:
                 log.warning("[%s] shape gate: %s", self.id, ph.describe())
             else:
                 log.info("[%s] ignored decode: %s", self.id, ph.describe())
+        mirror_note = ""
+        if not hits and image_src and (hint := self._mirror_hint(image_src, crop)):
+            mirror_note = "tag found mirrored: see Mirrored setting"
+            warnings.append(hint)
+            log.warning("[%s] %s", self.id, hint)
         if rejected := [ph for ph in phantoms if ph.rejected_target]:
             warnings.append(f"tag id {self.detector.tag_id} decode rejected by shape gate: "
                             + "; ".join(sorted({ph.reason for ph in rejected})))
@@ -368,17 +431,32 @@ class TrackedObject:
 
         with self.cond:
             before, _ = self.decision.reported(self.cfg, self.settings.enabled)
-            outcome = self.decision.update(res, self.cfg, now, self.settings.poll_interval)
+            # A miss streak expires after 3 intervals: the longest one in use.
+            outcome = self.decision.update(res, self.cfg, now,
+                                           self.settings.poll_interval * self.settings.slowdown_max)
             self.decision.save(self.state_path)
             if rejected:
                 self.last_reject_reasons = sorted({ph.reason for ph in rejected})
+            after = self.decision.reported(self.cfg, self.settings.enabled)[0]
+            steady = after == before and ((outcome == dec.HIT and after == dec.PRESENT)
+                                          or (outcome == dec.MISS and after == dec.ABSENT))
             self.sched.on_result(trigger, outcome, self.decision.miss_streak,
-                                 self.cfg.absent_checks, time.monotonic())
+                                 self.cfg.absent_checks, time.monotonic(), steady)
             prev_rotation = self.rotation
             if angle is not None:
                 self.rotation_angle = angle
                 self.rotation = snap(angle, self.settings.rotation_steps, self.rotation)
             rotated = prev_rotation is not None and self.rotation != prev_rotation
+            if self.decision.reported(self.cfg, self.settings.enabled)[0] != dec.PRESENT:
+                self.home_distance = None
+            elif dist is not None:
+                self.home_distance = dist
+            was_moved = self.moved
+            self._update_moved_locked()
+            moved = self.moved and not was_moved
+            if self.moved != was_moved:
+                log.info("[%s] moved %s (%s tag widths from home)", self.id,
+                         "on" if self.moved else "off", self.home_distance)
             if rotated:
                 log.info("[%s] rotation %s° -> %s° (exact %.1f°)", self.id, fmt_deg(prev_rotation),
                          fmt_deg(self.rotation), angle)
@@ -434,6 +512,7 @@ class TrackedObject:
                 "aspect": round(aspect, 2) if aspect else None,
                 "rotation": fmt_deg(self.rotation) if angle is not None else None,
                 "angle": round(angle, 1) if angle is not None else None,
+                "home_distance": dist,
                 "warning": self.last_diag["warning"],
                 "phantoms": [p.describe() for p in phantoms]})
             crop_std = self.last_diag["crop_std"]
@@ -445,7 +524,7 @@ class TrackedObject:
                 "outcome": outcome, "reported": value})
         jpeg = None
         if image_src is not None:
-            jpeg = annotate(image_src.check.bgr, image_src.det, phantoms)
+            jpeg = annotate(image_src.check.bgr, image_src.det, phantoms, note=mirror_note)
             self.last_jpeg = jpeg
             if phantoms:
                 self.last_phantom_jpeg = jpeg
@@ -455,11 +534,26 @@ class TrackedObject:
         if rotated:
             self.snapshots.add(iso(now), now, f"{fmt_deg(prev_rotation)}°", f"{fmt_deg(self.rotation)}°",
                                f"rotated (exact {angle:.1f}°)", jpeg)
+        if moved:
+            self.snapshots.add(iso(now), now, "home", "moved",
+                               f"moved {self.home_distance} tag widths from home", jpeg)
         self._sync_alert()
         log.info("[%s] check %s: %d/%d valid, %d hits, %d fetch failures -> %s; reported %s (%s), "
                  "streak %d", self.id, trigger, len(valid), attempted, len(hits), burst.failures,
                  outcome, value, reason, self.decision.miss_streak)
         return outcome
+
+    def _mirror_hint(self, r: FrameResult, crop) -> str | None:
+        """A tag that has never been seen may be mirrored (a camera flip setting,
+        or a mirrored print), which no rotation fixes. One extra decode of one
+        frame per miss, and only before the first hit, so normal running never
+        pays for it."""
+        if self.reference.hits or r.check is None or r.check.bgr is None:
+            return None
+        if not self.mirror_probe.detect(r.check.bgr, crop).found:
+            return None
+        return (f"tag {self.detector.tag_id} found mirrored: turn "
+                f"{'off' if self.oc.mirrored else 'on'} Mirrored in this object's settings")
 
     def _size_gate(self, r: FrameResult):
         """Shape gate, part 2: reject a target decode far smaller than the learned
@@ -476,22 +570,41 @@ class TrackedObject:
 
     # --- web UI -----------------------------------------------------------
 
+    def _pace_locked(self) -> dict:
+        """Objects on one camera are checked together, so the fastest poll sets the
+        pace for all of them. Says so when that is another object's interval."""
+        if self.camera is None or not self.settings.enabled:
+            return {}
+        polls = [(o.sched.poll_interval, o.oc.name) for o in self.camera.objects
+                 if o.settings.enabled and o.sched.poll_interval > 0]
+        if not polls:
+            return {}
+        fastest, name = min(polls)
+        own = self.sched.poll_interval
+        if own > 0 and fastest >= own:
+            return {}
+        return {"effective_poll_s": fastest, "paced_by": name}
+
     def status(self) -> dict:
         with self.cond:
             value, reason = self.decision.reported(self.cfg, self.settings.enabled)
             return {
                 **self.oc.to_dict(),
+                "camera": self.camera.name if self.camera else None,
+                **self._pace_locked(),
                 "state": value, "reason": reason,
                 "last_check": iso(self.decision.last_check_ts),
                 "last_seen": iso(self.decision.last_seen_ts),
                 "miss_streak": self.decision.miss_streak,
                 "settings": self.settings_values(),
+                "current_interval_s": self.sched.poll_interval if self.sched.factor > 1 else None,
                 "reference": self.reference.as_attrs()
                 | {"centre": [self.reference.cx, self.reference.cy] if self.reference.hits else None,
                    "size": self.reference.size if self.reference.hits else None,
                    "min_hits": MIN_HITS},
                 "alert": self._alert_locked(),
                 "rotation": self.rotation_status(),
+                "home_distance": self.home_distance, "moved": self.moved,
                 "last_corners": self.last_corners,
                 "diag": self.last_diag,
                 "last_phantom": self.last_phantom,

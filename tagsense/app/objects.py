@@ -36,6 +36,7 @@ class ObjectConfig:
     camera_entity: str = ""
     fallback: bool = False      # if the main source fails, try the other one
     tag_family: str = DEFAULT_FAMILY
+    mirrored: bool = False      # the camera sees the tag left-right reversed
 
     @property
     def fallback_source(self) -> str | None:
@@ -87,15 +88,19 @@ def parse_one(raw: dict, where: str = "object") -> ObjectConfig:
         raise ConfigError(f"{where} ({name}): go2rtc_stream is required for source go2rtc")
     if source == "ha_camera" and not entity:
         raise ConfigError(f"{where} ({name}): camera_entity is required for source ha_camera")
-    fallback = raw.get("fallback", False)
-    if isinstance(fallback, str):
-        fallback = fallback.strip().lower() in ("1", "true", "yes", "on")
-    fallback = bool(fallback)
+    fallback = _flag(raw.get("fallback", False))
     if fallback and source == "go2rtc" and not entity:
         raise ConfigError(f"{where} ({name}): a fallback needs a camera_entity to fall back to")
     if fallback and source == "ha_camera" and not stream:
         raise ConfigError(f"{where} ({name}): a fallback needs a go2rtc_stream to fall back to")
-    return ObjectConfig(oid, name, tag_id, source, stream, entity, fallback, family)
+    return ObjectConfig(oid, name, tag_id, source, stream, entity, fallback, family,
+                        _flag(raw.get("mirrored", False)))
+
+
+def _flag(v) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
 
 
 def validate_list(objs: list[ObjectConfig]) -> list[ObjectConfig]:

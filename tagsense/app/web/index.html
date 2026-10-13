@@ -9,7 +9,7 @@
   --bg: #f5f6f8; --card: #ffffff; --text: #1c1f23; --muted: #66707a; --line: #dde1e6;
   --accent: #0b74c4; --accent-text: #ffffff; --ok: #2e7d32; --warn: #b26a00; --bad: #c62828;
   --chip-present: #e3f3e4; --chip-absent: #eceff1; --chip-unknown: #fff1d6;
-  --crop: #ffb300; --usual: #00b8d4; --quad: #43a047;
+  --crop: #ffb300; --usual: #00b8d4; --quad: #43a047; --others: #e8eaed; --home: #e040fb;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -43,6 +43,9 @@ nav .dot.present { background: var(--ok); } nav .dot.unknown { background: var(-
 nav .who { margin-top: auto; padding: 14px 10px 0; }
 body.solo .shell { display: block; } body.solo nav#nav { display: none; }
 main { max-width: 1100px; width: 100%; margin: 0 auto; padding: 20px; }
+#banner { max-width: 1100px; margin: 0 auto; padding: 20px 20px 0; }
+#banner:empty { display: none; }
+#banner .notice { margin-bottom: 0; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .toolbar h2 { font-size: 20px; margin: 0; flex: 1; }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 16px; }
@@ -108,6 +111,10 @@ label.inline { display: inline-flex; align-items: center; margin: 0 16px 0 0; fo
 .editor img { width: 100%; display: block; }
 .editor svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .crop { position: absolute; border: 2px solid var(--crop); cursor: move; }
+.other-crop { position: absolute; border: 2px dashed var(--others); opacity: .75; pointer-events: none; }
+.other-crop.off { opacity: .4; }
+.other-crop span { position: absolute; left: 2px; top: 2px; line-height: 1.2; font-size: 11px; color: #000;
+  background: var(--others); padding: 0 4px; border-radius: 3px; white-space: nowrap; }
 .handle { position: absolute; width: 14px; height: 14px; background: var(--crop); border: 2px solid #000;
   border-radius: 3px; }
 .h-nw { left: -8px; top: -8px; cursor: nwse-resize; } .h-ne { right: -8px; top: -8px; cursor: nesw-resize; }
@@ -152,7 +159,8 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
   <a class="tab" href="#/pass" data-sec="pass">My pass</a>
   <div class="who muted small" id="whoami"></div>
 </nav>
-<main id="main"><div class="loading">Loading…</div></main>
+<div><div id="banner"></div>
+<main id="main"><div class="loading">Loading…</div></main></div>
 </div>
 
 <script>
@@ -265,12 +273,45 @@ function section(h) {
   if (h === "/pass") return "pass";
   return "presence";
 }
+// Shown on every page: Home Assistant is not getting TagSense's entities.
+const MQTT_DOCS = "https://lsnewman.github.io/ha-tagsense/getting-started/#mqtt";
+function mqttProblem(m) {
+  if (!m) return null;
+  const at = m.broker ? ` at <code>${esc(m.broker)}</code>` : "";
+  if (!m.connected) switch (m.problem) {
+    case "no_broker": return ["No MQTT broker", `TagSense needs one to create its Home Assistant entities. Install and start the
+      <b>Mosquitto broker</b> app (Settings → Apps → App store); TagSense connects by itself within a minute. Using another
+      broker? Set <code>mqtt_host</code> and its login on TagSense's Configuration tab.`];
+    case "login_refused": return ["MQTT login refused", `The broker${at} refused TagSense's login. If you set
+      <code>mqtt_username</code> / <code>mqtt_password</code> on the Configuration tab, check them; otherwise restart the
+      Mosquitto broker app, then TagSense.`];
+    case "unreachable": return ["Can't reach the MQTT broker", `Nothing answers${at}. Check that the Mosquitto broker app is
+      running, or <code>mqtt_host</code> / <code>mqtt_port</code> if you set them.`];
+    case "refused": return ["MQTT broker refused the connection", `The broker${at} said: ${esc(m.detail || "")}.`];
+    default: return null;                 // still connecting
+  }
+  const names = (m.missing_entities || []).map(esc).join(", ");
+  if (!names) return null;
+  if (m.mqtt_integration === false) return ["Home Assistant's MQTT integration is not set up", `So it cannot create
+    TagSense's devices (${names}). Add it under Settings → Devices &amp; services: the Mosquitto broker is usually
+    offered there as discovered.`];
+  return ["Home Assistant has not created TagSense's entities", `No entities for ${names} yet. Check that the MQTT
+    integration is set up and connected to the same broker as TagSense${at}.`];
+}
+function renderBanner() {
+  const p = mqttProblem(state.mqtt);
+  document.getElementById("banner").innerHTML = p ? `<div class="notice alert"><b>${p[0]}.</b> ${p[1]}
+    <a href="${MQTT_DOCS}" target="_blank" rel="noopener">How to set up MQTT</a></div>` : "";
+}
+
 function renderNav() {
+  renderBanner();
   const h = location.hash.replace(/^#/, "") || "/";
   const sec = section(h), a = state.access || {};
   document.querySelectorAll("nav .tab").forEach(t => t.classList.toggle("active", t.dataset.sec === sec));
   document.getElementById("access-off").style.display = a.enabled ? "none" : "";
-  const issues = state.objects.filter(o => o.alert || (o.state === "unknown" && o.settings.enabled && o.last_check)).length + (a.error ? 1 : 0);
+  const issues = state.objects.filter(o => o.alert || (o.state === "unknown" && o.settings.enabled && o.last_check)).length
+    + (a.error ? 1 : 0) + (mqttProblem(state.mqtt) ? 1 : 0);
   const hb = document.getElementById("health-badge");
   hb.textContent = issues; hb.style.display = issues ? "" : "none";
   const objId = (h.match(/^\/(?:obj|edit)\/([a-z0-9_]+)$/) || [])[1];
@@ -384,7 +425,9 @@ const pct = v => v === null || v === undefined ? "–" : v + "%";
 const secs = v => v === null || v === undefined ? "never" : v < 90 ? Math.round(v) + " s ago" : ago(new Date(Date.now() - v * 1000).toISOString());
 function healthProblems(h) {
   const p = [];
-  if (!h.mqtt_connected) p.push("The MQTT connection is down: Home Assistant is not getting updates.");
+  const mp = mqttProblem(h.mqtt);
+  if (mp) p.push(`${mp[0]}: see the note at the top of the page.`);
+  else if (!h.mqtt_connected) p.push("The MQTT connection is down: Home Assistant is not getting updates.");
   if (!h.go2rtc_configured && h.objects.length) p.push("go2rtc_url is not set: objects on go2rtc streams cannot be checked.");
   for (const c of h.cameras) if (c.last_error && (c.last_frame_age_s === null || c.last_frame_age_s > 600))
     p.push(`Camera ${c.name}: no frame recently (${c.last_error}).`);
@@ -417,8 +460,11 @@ async function healthPage(isRefresh) {
       <tr><td>Home Assistant entity ids</td><td>${h.entities_error ? `<span class="muted">${esc(h.entities_error)} (defaults are shown)</span>` : "readable"}</td></tr>
     </table></div>
     <div class="card"><h3>Cameras</h3>${h.cameras.length ? `<table class="small">
-      <tr><th>Camera</th><th>Objects</th><th>Last frame</th><th>Fetch failures</th><th>Last error</th></tr>
+      <tr><th>Camera</th><th>Objects</th><th>Last frame</th><th title="Average over the last 50 fetches">Fetch time</th>
+        <th title="Of the last 50 fetches">Fetches OK</th><th>Fetch failures</th><th>Last error</th></tr>
       ${h.cameras.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.objects.join(", "))}</td><td>${secs(c.last_frame_age_s)}</td>
+        <td>${c.fetch_ms_avg != null ? c.fetch_ms_avg + " ms" : "–"}</td>
+        <td>${c.recent_fetches ? `${pct(c.success_pct)} <span class="muted">of ${c.recent_fetches}</span>` : "–"}</td>
         <td>${c.fetch_failures_total}</td><td>${esc(c.last_error || "none")}</td></tr>`).join("")}</table>`
       : `<div class="muted small">No objects yet.</div>`}</div>
     <div class="card"><h3>Objects, last 24 hours</h3>${h.objects.length ? `<table class="small">
@@ -434,14 +480,22 @@ async function healthPage(isRefresh) {
         <td>${esc(sc.last_error || "none")}</td></tr>`).join("")}</table></div>` : ""}`;
   if (isRefresh && document.getElementById("health-dyn")) { document.getElementById("health-dyn").innerHTML = body; return; }
   $main.innerHTML = `<div class="toolbar"><h2>Health</h2>
-      <a class="btn" href="api/debug-bundle.zip">Download debug bundle</a></div>
+      <label class="inline small" style="margin:0 8px 0 0"><input type="checkbox" id="bundle-images" checked>&nbsp;Include images</label>
+      <button onclick="downloadBundle()">Download debug bundle</button></div>
     <div class="stack"><div id="health-dyn" class="stack">${body}</div>
     <div class="card"><div class="row"><h3 style="flex:1;margin:0">Recent log</h3>
       <button class="small" onclick="loadLog()">Refresh</button></div>
       <textarea id="health-log" readonly style="min-height:260px;margin-top:8px"></textarea>
-      <div class="hint">The debug bundle has this log, settings, each object's status and last 24 hours of checks, and the
-        scanners' settings and recent events. It never contains passwords, tokens, keys, passes or codes.</div></div></div>`;
+      <div class="hint">The debug bundle has this log, settings and versions, each object's status and last 24 hours of
+        checks, and the scanners' settings and recent events; with <b>Include images</b>, also each object's latest
+        search-area images. It never contains passwords, tokens, keys, passes or codes.</div></div></div>`;
   loadLog();
+}
+function downloadBundle() {
+  const images = document.getElementById("bundle-images").checked;
+  if (images && !confirm("The bundle will include each object's latest search-area images. They show part of your " +
+      "camera's view, so look at them before sharing the bundle with anyone.\n\nDownload with images?")) return;
+  location.href = `api/debug-bundle.zip?images=${images ? 1 : 0}`;
 }
 async function loadLog() {
   const t = document.getElementById("health-log");
@@ -612,7 +666,9 @@ function detail(id, isRefresh) {
         ${editorHtml("Search area", "It must cover every spot where the object might be.",
           `<button type="button" id="crop-fit" onclick="fitToTag()" title="Learned tag position, plus 3x the tag size on each side">Fit to tag</button>`,
           `<span><i style="background:var(--quad)"></i>last detection</span>
+          <span id="legend-others" style="display:none"><i style="border:2px dashed var(--muted);box-sizing:border-box"></i>other objects on this camera</span>
           <span><i style="background:var(--usual)"></i>usual position (learned)</span>
+          <span><i style="border:2px solid var(--home);border-radius:50%;box-sizing:border-box"></i>home</span>
           <span title="Solid: the tag's top now. Dashed: its top at 0°.">→ tag top now / at 0°</span>`)}
       </div>
 
@@ -625,12 +681,25 @@ function detail(id, isRefresh) {
           <input id="s-poll" type="number" min="0" max="86400" value="${s.poll_interval}"
             onchange="saveSetting('poll_interval', this.value)">
           <div class="hint">0 = only when Check now is pressed. Otherwise at least 10.</div>
+          <div class="hint" id="s-pace"></div>
+          <label for="s-slow">Slow down when settled (up to ×)</label>
+          <input id="s-slow" type="number" min="1" max="8" step="1" value="${s.slowdown_max}"
+            onchange="saveSetting('slowdown_max', this.value)">
+          <div class="hint">1 = off. Otherwise, after 5 checks in a row that only confirm the state, the
+            interval doubles, up to this many times the poll interval. Anything else, such as a miss while
+            present, goes straight back to the poll interval.</div>
           <label for="s-steps">Rotation steps</label>
           <input id="s-steps" type="number" min="1" max="36" value="${s.rotation_steps}"
             onchange="saveSetting('rotation_steps', this.value)">
           <div class="hint">4 = 0/90/180/270°, 8 = 45° steps, 1 = always 0 (off).
             The tag must stay visible in every orientation, e.g. on the lid.</div>
           <div class="row" style="margin-top:8px"><button id="s-zero" onclick="setOrientation('${id}')">Set current orientation as 0°</button></div>
+          <label for="s-moved">Moved threshold (tag widths)</label>
+          <input id="s-moved" type="number" min="0" max="50" step="0.5" value="${s.moved_threshold}"
+            onchange="saveSetting('moved_threshold', this.value)">
+          <div class="hint">Moved turns on when the tag is further than this from its home, and off again
+            below 80% of it. 0 = off.</div>
+          <div class="row" style="margin-top:8px"><button id="s-home" onclick="setHome('${id}')">Set current position as home</button></div>
           <div class="error" id="s-error"></div></div>
       </div>
     </div>
@@ -734,6 +803,14 @@ triggers:
     for:
       minutes: 5
 ${notify(n + " is back but turned {{ states('" + e.rotation + "') }}°.")}`]);
+  if (o.settings.moved_threshold > 0) ex.push(["Moved from its home", `alias: ${q(n + ": moved from home")}
+triggers:
+  - trigger: state
+    entity_id: ${e.moved}
+    to: "on"
+    for:
+      minutes: 5
+${notify(n + " is {{ states('" + e.home_distance + "') }} tag widths from its home.")}`]);
   ex.push(["Check straight away when something happens", `alias: ${q(n + ": check when something happens")}
 triggers:
   - trigger: state
@@ -799,6 +876,7 @@ async function updateDetail(o) {
       <tr><td>Tag size</td><td>${fmtNum(d.tag_size_px)} px</td></tr>
       <tr><td>Tag aspect</td><td>${fmtNum(d.tag_aspect, 2)} <span class="muted">(limit ${state.max_aspect ? state.max_aspect : "off"})</span></td></tr>
       <tr><td>Rotation</td><td>${rotText(o)}</td></tr>
+      <tr><td>From home</td><td>${homeText(o)}</td></tr>
       <tr><td>Miss streak</td><td>${o.miss_streak}</td></tr></table>`;
   document.getElementById("d-diag").innerHTML = `<table class="kv">
     <tr><td>Source</td><td>${esc(d.last_source || "–")} ${esc(d.resolution || "")}</td></tr>
@@ -819,8 +897,18 @@ async function updateDetail(o) {
   if (!editorDirty) { setCrop(savedCrop(), true); drawOverlay(o); }
   const s = o.settings, el = document.getElementById("s-enabled"), poll = document.getElementById("s-poll");
   if (document.activeElement !== poll) poll.value = s.poll_interval;
+  document.getElementById("s-pace").textContent = o.effective_poll_s
+    ? `Checked every ${o.effective_poll_s} s: ${o.paced_by} on the same camera is checked more often, and objects on one camera are checked together.`
+    : o.current_interval_s ? `Slowed down: checked every ${o.current_interval_s} s for now.` : "";
+  const slow = document.getElementById("s-slow");
+  if (document.activeElement !== slow) slow.value = s.slowdown_max;
   const steps = document.getElementById("s-steps");
   if (document.activeElement !== steps) steps.value = s.rotation_steps;
+  const moved = document.getElementById("s-moved");
+  if (document.activeElement !== moved) moved.value = s.moved_threshold;
+  const home = document.getElementById("s-home");
+  home.disabled = o.state !== "present" || !o.last_corners;
+  home.title = home.disabled ? "Only while the object is present" : "Make where the tag is now its home";
   const zero = document.getElementById("s-zero");
   zero.disabled = o.state !== "present" || !o.last_corners;
   zero.title = zero.disabled ? "Only while the object is present" : "Make the tag's current turn the 0° position";
@@ -843,6 +931,12 @@ async function updateDetail(o) {
   }
 }
 
+function homeText(o) {
+  if (!o.reference.home) return `– <span class="muted">(home is set after ${o.reference.min_hits} hits)</span>`;
+  if (o.home_distance === null || o.home_distance === undefined) return `– <span class="muted">(not present)</span>`;
+  return `${o.home_distance.toFixed(1)} tag widths${o.moved ? ` · <b style="color:var(--warn)">moved</b>` : ""}`;
+}
+
 function rotText(o) {
   const r = o.rotation || {};
   if (r.value === null || r.value === undefined) return `– <span class="muted">(${o.state === "present" ? "no hit yet" : "not present"})</span>`;
@@ -856,11 +950,18 @@ async function setOrientation(id) {
   catch (e) { alert(e.message); }
 }
 
+async function setHome(id) {
+  const o = objById(id);
+  if (!confirm(`Make where ${o ? o.name : id} is now its home position?`)) return;
+  try { await api(`objects/${id}/set_home`, { method: "POST" }); refresh(); }
+  catch (e) { alert(e.message); }
+}
+
 async function resetReference(id) {
   const o = objById(id);
   if (!confirm(`Reset the learned position of ${o ? o.name : id}?\n\nUse this after moving the object, e.g. further from the camera. ` +
                `The size gate and position warnings stay off until ${o ? o.reference.min_hits : 10} new hits have been learned. ` +
-               `The 0° rotation is also forgotten and set again from the next hit.`)) return;
+               `The 0° rotation and the home position are also forgotten and set again from new hits.`)) return;
   try { await api(`objects/${id}/reset_reference`, { method: "POST" }); refresh(); }
   catch (e) { alert(e.message); }
 }
@@ -1055,6 +1156,7 @@ function editorHtml(title, help, extra = "", legend = "") {
       <img id="frame" alt="" style="display:none">
       <svg id="overlay" viewBox="0 0 1 1" preserveAspectRatio="none">
         <path id="dim" fill="rgba(0,0,0,.6)" fill-rule="evenodd" d=""/><g id="marks"></g></svg>
+      <div id="others"></div>
       <div class="crop" id="crop" style="display:none">
         <div class="handle h-nw" data-h="nw"></div><div class="handle h-ne" data-h="ne"></div>
         <div class="handle h-sw" data-h="sw"></div><div class="handle h-se" data-h="se"></div></div>
@@ -1091,9 +1193,28 @@ function fitToTag() {
   setCrop([cx - hx, cy - hy, cx + hx, cy + hy]);
 }
 
+// The primary feed an object reads (fallback ignored): objects with the same one
+// see the same frame, so their search areas are worth showing together.
+const feedOf = o => o.source + ":" + (o.source === "go2rtc" ? o.go2rtc_stream : o.camera_entity);
+
+function drawOthers(o) {
+  const box = document.getElementById("others");
+  if (!box) return;
+  const others = state.objects.filter(x => x.id !== o.id && feedOf(x) === feedOf(o));
+  box.innerHTML = others.map(x => {
+    const [x1, y1, x2, y2] = [x.settings.crop_x1, x.settings.crop_y1, x.settings.crop_x2, x.settings.crop_y2];
+    return `<div class="other-crop${x.settings.enabled ? "" : " off"}" title="${esc(x.name)} (${esc(tagLabel(x))})"
+      style="left:${x1 * 100}%;top:${y1 * 100}%;width:${(x2 - x1) * 100}%;height:${(y2 - y1) * 100}%">
+      <span>${esc(x.name)}</span></div>`;
+  }).join("");
+  const leg = document.getElementById("legend-others");
+  if (leg) leg.style.display = others.length ? "" : "none";
+}
+
 function drawOverlay(o) {
   const svg = document.getElementById("marks");
   if (!svg) return;
+  drawOthers(o);
   let out = "";
   if (o.last_corners) out += `<polygon points="${o.last_corners.map(p => p.join(",")).join(" ")}"
       fill="none" stroke="var(--quad)" stroke-width="0.004" vector-effect="non-scaling-stroke" style="stroke-width:2px"/>`;
@@ -1104,6 +1225,14 @@ function drawOverlay(o) {
   const zero = o.rotation && o.rotation.zero_corners;     // on top of the crosshair
   if (zero) out += tagArrow(zero, "var(--usual)", true);
   if (o.last_corners) out += tagArrow(o.last_corners, "var(--quad)", false);
+  const home = o.reference && o.reference.home;
+  if (home) {                                 // a circle in pixel space
+    const img = document.getElementById("frame");
+    const k = img && img.naturalWidth ? img.naturalHeight / img.naturalWidth : 9 / 16;
+    const r = Math.max((o.reference.size || 0.04) * 0.6, 0.015);
+    out += `<ellipse cx="${home[0]}" cy="${home[1]}" rx="${r * k}" ry="${r}" fill="none" stroke="var(--home)"
+      vector-effect="non-scaling-stroke" style="stroke-width:2px"/>`;
+  }
   svg.innerHTML = out;
 }
 
@@ -1243,6 +1372,10 @@ async function objectForm(id) {
       <span id="f-tag-wrap">${tagIdControl(famOf(v), v.tag_id)}</span>
       <div class="hint">The ID printed on this object. Objects on the same camera need different IDs.
         <a href="#" target="_blank" id="f-print">Print this tag</a></div>
+      <label class="inline" style="margin-top:12px"><input type="checkbox" id="f-mirrored" ${v.mirrored ? "checked" : ""}>
+        Mirrored: the camera shows the tag left-right reversed</label>
+      <div class="hint">Turn on only if the tag is never found and text looks back to front in this camera's image
+        (a mirror or flip setting on the camera), or the tag was printed mirrored. Rotating a mirrored tag does not help.</div>
       <label>Camera source</label>
       <div class="row">
         <label class="inline"><input type="radio" name="src" value="go2rtc" ${v.source === "go2rtc" ? "checked" : ""}> go2rtc stream</label>
@@ -1303,7 +1436,8 @@ async function objectForm(id) {
       tag_id: +document.getElementById("f-tag").value, source: srcSel(),
       go2rtc_stream: document.getElementById("f-stream").value.trim(),
       camera_entity: document.getElementById("f-entity").value,
-      fallback: document.getElementById("f-fallback").checked };
+      fallback: document.getElementById("f-fallback").checked,
+      mirrored: document.getElementById("f-mirrored").checked };
     if (!o) body.id = document.getElementById("f-id").value.trim();
     const btn = e.target.querySelector("button[type=submit]");
     btn.disabled = true; btn.textContent = "Saving…";

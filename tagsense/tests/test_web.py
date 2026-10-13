@@ -106,6 +106,23 @@ def test_create_update_delete_live(app, tmp_path):
     assert not (tmp_path / "objects" / "recycling").exists()
 
 
+def test_camera_pace_shows_the_faster_object(app):
+    api = Api(app)
+    api.create({"name": "Recycling", "tag_id": 7, "source": "go2rtc", "go2rtc_stream": "cam"})
+    by_id = lambda: {o["id"]: o for o in api.state()["objects"]}
+    assert by_id()["bin"]["camera"] == by_id()["recycling"]["camera"] == "cam"
+    assert "effective_poll_s" not in by_id()["bin"]                # both 60 s
+    app.objects["bin"].on_setting("poll_interval", "300", from_api=True)
+    o = by_id()
+    assert (o["bin"]["effective_poll_s"], o["bin"]["paced_by"]) == (60, "Recycling")
+    assert "effective_poll_s" not in o["recycling"]                # it sets the pace
+    app.objects["recycling"].on_setting("enabled", "OFF", from_api=True)
+    assert "effective_poll_s" not in by_id()["bin"]                # disabled: not checked
+    app.objects["recycling"].on_setting("enabled", "ON", from_api=True)
+    app.objects["bin"].on_setting("poll_interval", "0", from_api=True)
+    assert by_id()["bin"]["effective_poll_s"] == 60                # manual-only, still checked
+
+
 def test_validation_errors_leave_running_config(app):
     api = Api(app)
     with pytest.raises(ApiError, match="same camera"):

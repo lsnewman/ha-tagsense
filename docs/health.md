@@ -10,18 +10,30 @@ tab counts anything that needs a look.
   frames, Access not started, a locked-out scanner.
 - **Connections:** MQTT for Presence and Access, go2rtc, and whether TagSense
   can read Home Assistant's users and entity IDs.
-- **Cameras:** each camera's objects, last frame, fetch failures and last error.
+- **Cameras:** each camera's objects, last frame, average fetch time and how
+  many fetches succeeded (both over the last 50 fetches), total fetch failures
+  and last error.
 - **Objects, last 24 hours:** state, checks, failed checks, frames discarded,
   state changes, fetch time and resolution.
 - **Access scanners:** last scan, last event, lockout, last error.
 - **Recent log.**
 
 **Download debug bundle** gives a zip to attach to a bug report: the log,
-settings, each object's status and last 24 hours of checks, and the scanners'
-settings and recent events. **Passwords, tokens and keys are hidden, and nothing
+settings and software versions, each object's status and last 24 hours of
+checks, and the scanners' settings and recent events. **Include images** (on
+by default) also adds each object's latest search-area images (the *Last crop*
+image, and the last one with a discarded read). They show part of the camera's
+view, so the panel asks you to confirm first; look at them before sharing the
+bundle. **Passwords, tokens and keys are hidden, and nothing
 from the Access code store (keys, passes, codes) is included.**
 
 ## Common problems
+
+??? question "A note about MQTT at the top of the panel"
+    Home Assistant is not getting TagSense's entities. The note says why: no
+    broker, a refused login, a broker that does not answer, or the MQTT
+    integration missing or on another broker. See
+    [MQTT](getting-started.md#mqtt) for what to do in each case.
 
 ??? question "An object stays *unknown*"
     No usable frame is arriving. Check the Health page's *Cameras* section for
@@ -39,6 +51,15 @@ from the Access code store (keys, passes, codes) is included.**
     the search area? Is it big and sharp enough (*Tag size*)? At night, compare
     *Crop brightness* and *Crop contrast* with daytime. A larger print helps
     more than any setting.
+
+??? question "The tag is plainly in view but never found"
+    Check that the tag is not mirrored. If the camera has a mirror or flip
+    setting switched on, or the tag was printed mirrored, no rotation of the
+    print will help. Until the tag has been seen once, TagSense looks for a
+    mirrored tag after a miss and writes *found mirrored* on the Last crop
+    image and in Recent checks. Switch the camera setting off, or turn on
+    **Mirrored** in the object's settings. A quick test is to hold up some
+    text: if it reads back to front in the camera image, the image is mirrored.
 
 ??? question "*Tag rejected* is on"
     The tag was read but the shape gate rejected it in 3 checks in a row. The
