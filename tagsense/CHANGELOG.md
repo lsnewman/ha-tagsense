@@ -2,6 +2,8 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
+## 0.5.3 (in development)
+
 ## 0.5.2
 
 **Upgrading:** nothing to do. Objects that have already learned their
