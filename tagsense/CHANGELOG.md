@@ -2,7 +2,12 @@
 
 Bump `version` in `config.yaml` with every release, or Home Assistant will not offer the update.
 
-## 0.5.2 (in development)
+## 0.5.2
+
+**Upgrading:** nothing to do. Objects that have already learned their
+position take that as their home, so *Distance from home* and *Moved* work
+straight away; if the object was not in its usual place lately, press **Set
+current position as home** once it is. New entities appear by themselves.
 
 - **Mirrored tags:** a new **Mirrored** option on each object, for a camera
   that shows the tag left-right reversed (a mirror or flip setting on the
