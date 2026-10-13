@@ -43,6 +43,9 @@ nav .dot.present { background: var(--ok); } nav .dot.unknown { background: var(-
 nav .who { margin-top: auto; padding: 14px 10px 0; }
 body.solo .shell { display: block; } body.solo nav#nav { display: none; }
 main { max-width: 1100px; width: 100%; margin: 0 auto; padding: 20px; }
+#banner { max-width: 1100px; margin: 0 auto; padding: 20px 20px 0; }
+#banner:empty { display: none; }
+#banner .notice { margin-bottom: 0; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
 .toolbar h2 { font-size: 20px; margin: 0; flex: 1; }
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 16px; }
@@ -156,7 +159,8 @@ textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width:
   <a class="tab" href="#/pass" data-sec="pass">My pass</a>
   <div class="who muted small" id="whoami"></div>
 </nav>
-<main id="main"><div class="loading">Loading…</div></main>
+<div><div id="banner"></div>
+<main id="main"><div class="loading">Loading…</div></main></div>
 </div>
 
 <script>
@@ -269,12 +273,45 @@ function section(h) {
   if (h === "/pass") return "pass";
   return "presence";
 }
+// Shown on every page: Home Assistant is not getting TagSense's entities.
+const MQTT_DOCS = "https://lsnewman.github.io/ha-tagsense/getting-started/#mqtt";
+function mqttProblem(m) {
+  if (!m) return null;
+  const at = m.broker ? ` at <code>${esc(m.broker)}</code>` : "";
+  if (!m.connected) switch (m.problem) {
+    case "no_broker": return ["No MQTT broker", `TagSense needs one to create its Home Assistant entities. Install and start the
+      <b>Mosquitto broker</b> app (Settings → Apps → App store); TagSense connects by itself within a minute. Using another
+      broker? Set <code>mqtt_host</code> and its login on TagSense's Configuration tab.`];
+    case "login_refused": return ["MQTT login refused", `The broker${at} refused TagSense's login. If you set
+      <code>mqtt_username</code> / <code>mqtt_password</code> on the Configuration tab, check them; otherwise restart the
+      Mosquitto broker app, then TagSense.`];
+    case "unreachable": return ["Can't reach the MQTT broker", `Nothing answers${at}. Check that the Mosquitto broker app is
+      running, or <code>mqtt_host</code> / <code>mqtt_port</code> if you set them.`];
+    case "refused": return ["MQTT broker refused the connection", `The broker${at} said: ${esc(m.detail || "")}.`];
+    default: return null;                 // still connecting
+  }
+  const names = (m.missing_entities || []).map(esc).join(", ");
+  if (!names) return null;
+  if (m.mqtt_integration === false) return ["Home Assistant's MQTT integration is not set up", `So it cannot create
+    TagSense's devices (${names}). Add it under Settings → Devices &amp; services: the Mosquitto broker is usually
+    offered there as discovered.`];
+  return ["Home Assistant has not created TagSense's entities", `No entities for ${names} yet. Check that the MQTT
+    integration is set up and connected to the same broker as TagSense${at}.`];
+}
+function renderBanner() {
+  const p = mqttProblem(state.mqtt);
+  document.getElementById("banner").innerHTML = p ? `<div class="notice alert"><b>${p[0]}.</b> ${p[1]}
+    <a href="${MQTT_DOCS}" target="_blank" rel="noopener">How to set up MQTT</a></div>` : "";
+}
+
 function renderNav() {
+  renderBanner();
   const h = location.hash.replace(/^#/, "") || "/";
   const sec = section(h), a = state.access || {};
   document.querySelectorAll("nav .tab").forEach(t => t.classList.toggle("active", t.dataset.sec === sec));
   document.getElementById("access-off").style.display = a.enabled ? "none" : "";
-  const issues = state.objects.filter(o => o.alert || (o.state === "unknown" && o.settings.enabled && o.last_check)).length + (a.error ? 1 : 0);
+  const issues = state.objects.filter(o => o.alert || (o.state === "unknown" && o.settings.enabled && o.last_check)).length
+    + (a.error ? 1 : 0) + (mqttProblem(state.mqtt) ? 1 : 0);
   const hb = document.getElementById("health-badge");
   hb.textContent = issues; hb.style.display = issues ? "" : "none";
   const objId = (h.match(/^\/(?:obj|edit)\/([a-z0-9_]+)$/) || [])[1];
@@ -388,7 +425,9 @@ const pct = v => v === null || v === undefined ? "–" : v + "%";
 const secs = v => v === null || v === undefined ? "never" : v < 90 ? Math.round(v) + " s ago" : ago(new Date(Date.now() - v * 1000).toISOString());
 function healthProblems(h) {
   const p = [];
-  if (!h.mqtt_connected) p.push("The MQTT connection is down: Home Assistant is not getting updates.");
+  const mp = mqttProblem(h.mqtt);
+  if (mp) p.push(`${mp[0]}: see the note at the top of the page.`);
+  else if (!h.mqtt_connected) p.push("The MQTT connection is down: Home Assistant is not getting updates.");
   if (!h.go2rtc_configured && h.objects.length) p.push("go2rtc_url is not set: objects on go2rtc streams cannot be checked.");
   for (const c of h.cameras) if (c.last_error && (c.last_frame_age_s === null || c.last_frame_age_s > 600))
     p.push(`Camera ${c.name}: no frame recently (${c.last_error}).`);

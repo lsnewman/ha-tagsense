@@ -101,6 +101,7 @@ class TrackedObject:
                                tuning.confirm_delay_s, self.settings.enabled,
                                self.settings.slowdown_max)
         self.camera = None                  # CameraWorker, set by the app
+        self.discovered_at: float | None = None     # monotonic, last discovery publish
         self.known_ids: set[int] = set()   # other objects' tags (same family) on this camera
         self.last_phantom: dict | None = None
         # For the web UI
@@ -234,6 +235,7 @@ class TrackedObject:
         with self.cond:
             values = self.settings_values()
         self.pub.publish_discovery()
+        self.discovered_at = time.monotonic()
         self.pub.publish_settings(values, also_commands)
         with self.cond:
             self._publish_state_locked()

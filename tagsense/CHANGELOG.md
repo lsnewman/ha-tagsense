@@ -26,6 +26,13 @@ Bump `version` in `config.yaml` with every release, or Home Assistant will not o
   change or Check now goes straight back to the poll interval.
 - **Health page:** each camera now shows its average fetch time and how
   many of its last 50 fetches succeeded.
+- **MQTT problems explained in the panel:** TagSense no longer stops when
+  there is no MQTT broker (Mosquitto not installed); it starts, keeps the
+  panel working and connects by itself once a broker appears. A note at the
+  top of every page says what is wrong: no broker, login refused, broker not
+  reachable, the MQTT integration not set up, or Home Assistant not creating
+  an object's entities two minutes after it was published. Each links to
+  the new MQTT section of the getting-started guide.
 - **Debug bundle:** now also has the object list and software versions, and
   optionally (on by default, confirmed before downloading) each object's
   latest search-area images.

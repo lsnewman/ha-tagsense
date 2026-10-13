@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -315,10 +317,21 @@ class ObjectPublisher:
             self.pub(topic, b"")
 
 
-class MqttClient:
-    """The shared connection. Routes commands to objects by id."""
+# Why there is no connection, for the panel's banner (None = connected or connecting).
+NO_BROKER, LOGIN_REFUSED, UNREACHABLE, REFUSED = "no_broker", "login_refused", "unreachable", "refused"
+BROKER_RETRY_S = 60.0
+_LOGIN_CODES = {4, 5, 134, 135}     # bad user name or password / not authorised (3.1.1 and 5)
 
-    def __init__(self, cfg: MqttConfig, version: str,
+
+class MqttClient:
+    """The shared connection. Routes commands to objects by id.
+
+    Never stops the app: with no broker yet (Mosquitto not installed, no override)
+    it keeps asking the Supervisor every BROKER_RETRY_S and connects once there is
+    one. Publishes while not connected are dropped: every (re)connect republishes
+    everything that matters."""
+
+    def __init__(self, cfg: MqttConfig | Callable[[], MqttConfig], version: str,
                  on_connected: Callable[[bool], None],
                  on_setting: Callable[[str, str, str], None],
                  on_command: Callable[[str, str], None],
@@ -328,38 +341,84 @@ class MqttClient:
         self._on_setting = on_setting
         self._on_command = on_command
         self._on_ha_restart = on_ha_restart
+        self._cfg_source = cfg if callable(cfg) else (lambda: cfg)
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tagsense")
-        if cfg.username:
-            c.username_pw_set(cfg.username, cfg.password)
         c.will_set(AVAILABILITY, OFFLINE, qos=1, retain=True)
         c.reconnect_delay_set(1, 60)
         c.on_connect = self._handle_connect
+        c.on_connect_fail = self._handle_connect_fail
         c.on_message = self._handle_message
-        c.on_disconnect = lambda *a: log.warning("MQTT disconnected")
+        c.on_disconnect = self._handle_disconnect
         self.client = c
-        self.cfg = cfg
+        self.cfg: MqttConfig | None = None
+        self.connected = False
+        self.connected_at: float | None = None     # monotonic, last successful connect
+        self.problem: str | None = None
+        self.problem_detail: str | None = None
         self._connected_once = False
+        self._stop = threading.Event()
 
     def start(self):
-        log.info("connecting to MQTT %s:%s", self.cfg.host, self.cfg.port)
-        self.client.connect_async(self.cfg.host, self.cfg.port, keepalive=60)
-        self.client.loop_start()
+        threading.Thread(target=self._connect_loop, name="mqtt-setup", daemon=True).start()
+
+    def _connect_loop(self):
+        while not self._stop.is_set():
+            try:
+                cfg = self._cfg_source()
+            except RuntimeError as e:
+                if self.problem != NO_BROKER:
+                    log.error("no MQTT broker: %s (retrying every %ds)", e, BROKER_RETRY_S)
+                self.problem, self.problem_detail = NO_BROKER, str(e)
+                self._stop.wait(BROKER_RETRY_S)
+                continue
+            self.cfg = cfg
+            if cfg.username:
+                self.client.username_pw_set(cfg.username, cfg.password)
+            self.problem = self.problem_detail = None
+            log.info("connecting to MQTT %s:%s", cfg.host, cfg.port)
+            self.client.connect_async(cfg.host, cfg.port, keepalive=60)
+            self.client.loop_start()
+            return
+
+    def status(self) -> dict:
+        return {"connected": self.connected, "problem": None if self.connected else self.problem,
+                "detail": None if self.connected else self.problem_detail,
+                "broker": f"{self.cfg.host}:{self.cfg.port}" if self.cfg else None}
 
     def stop(self):
-        self.client.publish(AVAILABILITY, OFFLINE, qos=1, retain=True).wait_for_publish(5)
+        self._stop.set()
+        if self.cfg is None:
+            return
+        if self.connected:
+            self.client.publish(AVAILABILITY, OFFLINE, qos=1, retain=True).wait_for_publish(5)
         self.client.disconnect()
         self.client.loop_stop()
 
     def pub(self, topic: str, payload, retain: bool = True):
+        if not self.connected:
+            return
         self.client.publish(topic, payload, qos=1 if retain else 0, retain=retain)
 
     # --- callbacks (paho thread: keep short) ------------------------------
 
+    def _handle_connect_fail(self, client, userdata):
+        if self.problem != UNREACHABLE:
+            log.error("MQTT broker %s:%s not reachable", self.cfg.host, self.cfg.port)
+        self.problem, self.problem_detail = UNREACHABLE, f"cannot reach {self.cfg.host}:{self.cfg.port}"
+
+    def _handle_disconnect(self, client, userdata, flags, reason_code, properties):
+        self.connected = False
+        log.warning("MQTT disconnected (%s)", reason_code)
+
     def _handle_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code.is_failure:
             log.error("MQTT connect failed: %s", reason_code)
+            self.problem = LOGIN_REFUSED if reason_code.value in _LOGIN_CODES else REFUSED
+            self.problem_detail = str(reason_code)
             return
         log.info("MQTT connected")
+        self.connected, self.connected_at = True, time.monotonic()
+        self.problem = self.problem_detail = None
         first = not self._connected_once
         self._connected_once = True
         # Discovery and settings are published by the app before subscribing, so

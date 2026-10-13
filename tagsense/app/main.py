@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import threading
+import time
 
 from . import decision as dec
 from . import globals as gl
@@ -26,6 +27,7 @@ log = logging.getLogger("tagsense")
 DATA_DIR = os.environ.get("TAGSENSE_DATA", "/data")
 VERSION = os.environ.get("TAGSENSE_VERSION", "dev")
 WEB_PORT = int(os.environ.get("TAGSENSE_WEB_PORT", "8099"))
+ENTITY_GRACE_S = 120.0      # time for Home Assistant to create an object's entities
 
 DEFAULT_OPTIONS = {
     "go2rtc_url": "",
@@ -78,7 +80,9 @@ class App:
             log.info("detection settings copied from the app options; change them in the panel (Settings)")
         self.opts.update(self.globals)
         self.tuning = self._make_tuning()
-        self.mqtt = mqtt or MqttClient(supervisor_mqtt_config(opts), VERSION,
+        # The broker login is looked up when MQTT starts (and again until there is
+        # one), so a missing Mosquitto never stops the app or its panel.
+        self.mqtt = mqtt or MqttClient(lambda: supervisor_mqtt_config(opts), VERSION,
                                        on_connected=self._on_connected,
                                        on_setting=self._on_setting,
                                        on_command=self._on_command,
@@ -208,6 +212,28 @@ class App:
                     o.request(STARTUP)
             self._start_workers()
         log.info("objects reloaded: %s", ", ".join(o.id for o in configs) or "(none)")
+
+    # --- is Home Assistant getting our entities? (panel banner) -----------
+
+    def mqtt_status(self) -> dict:
+        """The MQTT connection, and objects whose entities Home Assistant has not
+        created ENTITY_GRACE_S after their discovery was published (the MQTT
+        integration missing, or on another broker)."""
+        st = self.mqtt.status() if hasattr(self.mqtt, "status") else {
+            "connected": self.connected, "problem": None, "detail": None, "broker": None}
+        st = {**st, "missing_entities": [], "mqtt_integration": None}
+        now = time.monotonic()
+        waited = [o for o in self.objects.values()
+                  if o.discovered_at is not None and now - o.discovered_at > ENTITY_GRACE_S]
+        if not st["connected"] or not waited:
+            return st
+        ids = self.entities.registered()
+        if ids is None:                 # registry not readable: say nothing
+            return st
+        st["missing_entities"] = [o.oc.name for o in waited if f"tagsense_{o.id}_presence" not in ids]
+        if st["missing_entities"]:
+            st["mqtt_integration"] = self.entities.mqtt_integration()
+        return st
 
     # --- MQTT callbacks (paho thread) -------------------------------------
 

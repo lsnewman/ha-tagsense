@@ -64,6 +64,7 @@ class Api:
                              for f in FAMILIES},
                 "default_family": DEFAULT_FAMILY,
                 "objects": [o.status() for o in self.app.objects.values()],
+                "mqtt": self.app.mqtt_status(),
                 "access": {"enabled": self.app.access is not None,
                            "error": self.app.access_error,
                            # names only, for the panel's navigation

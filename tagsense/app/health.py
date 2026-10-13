@@ -122,6 +122,7 @@ def health(app) -> dict:
                         "day": day_summary(o.checklog.points(), now)})
     out = {"version": os.environ.get("TAGSENSE_VERSION", "dev"),
            "mqtt_connected": mqtt_connected(app.mqtt, app.connected),
+           "mqtt": app.mqtt_status(),
            "go2rtc_configured": bool(app.opts.get("go2rtc_url")),
            "users_error": app.users.error,
            "entities_error": app.entities.check(),

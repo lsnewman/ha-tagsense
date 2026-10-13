@@ -29,6 +29,12 @@ from the Access code store (keys, passes, codes) is included.**
 
 ## Common problems
 
+??? question "A note about MQTT at the top of the panel"
+    Home Assistant is not getting TagSense's entities. The note says why: no
+    broker, a refused login, a broker that does not answer, or the MQTT
+    integration missing or on another broker. See
+    [MQTT](getting-started.md#mqtt) for what to do in each case.
+
 ??? question "An object stays *unknown*"
     No usable frame is arriving. Check the Health page's *Cameras* section for
     the last error, and that `go2rtc_url` is set for go2rtc streams. If frames
